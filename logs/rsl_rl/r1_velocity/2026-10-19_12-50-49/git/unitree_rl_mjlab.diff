@@ -1,0 +1,265 @@
+--- git commit ---
+1425b15f73bd4095f0df53709d7c389c3eb9e790
+
+
+--- git status ---
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   deploy/include/param.h
+	modified:   deploy/robots/r1/CMakeLists.txt
+	modified:   deploy/robots/r1/main.cpp
+	modified:   simulate/CMakeLists.txt
+	modified:   simulate/config.yaml
+	modified:   simulate/src/main.cc
+	modified:   simulate/src/unitree_sdk2_bridge.h
+	modified:   src/assets/robots/unitree_r1/xmls/r1.xml
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	cyclonedds_local.xml
+	deploy/robots/r1/config/policy/velocity/v0/exported/
+	docs/
+	ps5_receiver.py
+	simulate/tests/
+	src/__pycache__/
+	src/assets/__pycache__/
+	src/assets/robots/__pycache__/
+	src/assets/robots/unitree_a2/__pycache__/
+	src/assets/robots/unitree_as2/__pycache__/
+	src/assets/robots/unitree_g1/__pycache__/
+	src/assets/robots/unitree_go2/__pycache__/
+	src/assets/robots/unitree_h1_2/__pycache__/
+	src/assets/robots/unitree_h2/__pycache__/
+	src/assets/robots/unitree_r1/__pycache__/
+	src/tasks/__pycache__/
+	src/tasks/tracking/__pycache__/
+	src/tasks/tracking/config/__pycache__/
+	src/tasks/tracking/config/g1/__pycache__/
+	src/tasks/tracking/config/g1_23dof/__pycache__/
+	src/tasks/tracking/mdp/__pycache__/
+	src/tasks/tracking/rl/__pycache__/
+	src/tasks/velocity/__pycache__/
+	src/tasks/velocity/config/__pycache__/
+	src/tasks/velocity/config/a2/__pycache__/
+	src/tasks/velocity/config/as2/__pycache__/
+	src/tasks/velocity/config/g1/__pycache__/
+	src/tasks/velocity/config/g1_23dof/__pycache__/
+	src/tasks/velocity/config/go2/__pycache__/
+	src/tasks/velocity/config/h1_2/__pycache__/
+	src/tasks/velocity/config/h2/__pycache__/
+	src/tasks/velocity/config/r1/__pycache__/
+	src/tasks/velocity/mdp/__pycache__/
+	src/tasks/velocity/rl/__pycache__/
+
+no changes added to commit (use "git add" and/or "git commit -a") 
+
+
+--- git diff ---
+diff --git a/deploy/include/param.h b/deploy/include/param.h
+index dae4bb4..3c83189 100644
+--- a/deploy/include/param.h
++++ b/deploy/include/param.h
+@@ -119,7 +119,8 @@ inline std::filesystem::path parser_policy_dir(std::filesystem::path policy_dir)
+ namespace po = boost::program_options;
+ 
+ //※ This function must be called at the beginning of main() function
+-inline po::variables_map helper(int argc, char** argv) 
++inline po::variables_map helper(int argc, char** argv,
++                                const po::options_description& extra = po::options_description())
+ {
+     bin_path = get_bin_path();
+     load_config_file();
+@@ -133,6 +134,7 @@ inline po::variables_map helper(int argc, char** argv)
+         ;
+ 
+     po::variables_map vm;
++    desc.add(extra);
+     po::store(po::parse_command_line(argc, argv, desc), vm);
+     po::notify(vm);
+ 
+@@ -161,4 +163,4 @@ inline po::variables_map helper(int argc, char** argv)
+     return vm;
+ }
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/deploy/robots/r1/CMakeLists.txt b/deploy/robots/r1/CMakeLists.txt
+index c0f94da..62ee51c 100644
+--- a/deploy/robots/r1/CMakeLists.txt
++++ b/deploy/robots/r1/CMakeLists.txt
+@@ -1,6 +1,7 @@
+ cmake_minimum_required(VERSION 3.12)
+ project(r1_controller)
+-
++list(APPEND CMAKE_PREFIX_PATH "/opt/unitree_robotics/lib/cmake")
++find_package(unitree_sdk2 REQUIRED)
+ set(CMAKE_CXX_STANDARD 17)
+ 
+ find_package(Boost REQUIRED COMPONENTS program_options)
+@@ -14,9 +15,10 @@ elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+ endif()
+ 
+ include_directories(
++  /opt/unitree_robotics/include
++  /opt/unitree_robotics/include/ddscxx
++  /opt/unitree_robotics/include/iceoryx/v2.0.2
+   /usr/include/eigen3
+-  /usr/local/include/ddscxx
+-  /usr/local/include/iceoryx/v2.0.2
+   include
+   ${ONNXRUNTIME_DIR}/include
+   ${PROJECT_SOURCE_DIR}/../../include/
+@@ -48,4 +50,4 @@ file(GLOB_RECURSE ADD_SRC_LIST
+ add_library(${PROJECT_NAME}_lib ${ADD_SRC_LIST})
+ link_libraries(${PROJECT_NAME}_lib)
+ 
+-add_executable(r1_ctrl main.cpp)
+\ No newline at end of file
++add_executable(r1_ctrl main.cpp)
+diff --git a/deploy/robots/r1/main.cpp b/deploy/robots/r1/main.cpp
+index 9c35909..caf0228 100644
+--- a/deploy/robots/r1/main.cpp
++++ b/deploy/robots/r1/main.cpp
+@@ -2,6 +2,7 @@
+ #include "FSM/State_Passive.h"
+ #include "FSM/State_FixStand.h"
+ #include "FSM/State_RLBase.h"
++#include <cstdlib>
+ 
+ std::unique_ptr<LowCmd_t> FSMState::lowcmd = nullptr;
+ std::shared_ptr<LowState_t> FSMState::lowstate = nullptr;
+@@ -27,13 +28,36 @@ void init_fsm_state()
+ int main(int argc, char** argv)
+ {
+     // Load parameters
+-    auto vm = param::helper(argc, argv);
++    param::po::options_description extra("R1 diagnostics");
++    extra.add_options()("lowstate-only", "Receive LowState without publishing motor commands or starting the FSM");
++    auto vm = param::helper(argc, argv, extra);
+ 
+     std::cout << " --- Unitree Robotics --- \n";
+     std::cout << "     R1 Controller \n";
+ 
+     // Unitree DDS Config
+-    unitree::robot::ChannelFactory::Instance()->Init(0, vm["network"].as<std::string>());
++    // An explicit interface makes SDK2 supply its own XML, overriding CYCLONEDDS_URI.
++    const char* dds_uri = std::getenv("CYCLONEDDS_URI");
++    unitree::robot::ChannelFactory::Instance()->Init(
++        0, dds_uri && *dds_uri ? "" : vm["network"].as<std::string>());
++
++    if (vm.count("lowstate-only")) {
++        FSMState::lowstate = std::make_shared<LowState_t>();
++        spdlog::info("Waiting for connection to robot...");
++        FSMState::lowstate->wait_for_connection();
++        spdlog::info("Connected to robot.");
++        uint32_t previous_tick = 0;
++        while (true) {
++            sleep(1);
++            std::lock_guard<std::mutex> lock(FSMState::lowstate->mutex_);
++            spdlog::info("LowState: tick={}, mode_machine={}",
++                         FSMState::lowstate->msg_.tick(), FSMState::lowstate->msg_.mode_machine());
++            if (FSMState::lowstate->msg_.tick() == previous_tick) {
++                spdlog::warn("LowState tick has not advanced (simulation paused or reception stalled).");
++            }
++            previous_tick = FSMState::lowstate->msg_.tick();
++        }
++    }
+ 
+     init_fsm_state();
+ 
+diff --git a/simulate/CMakeLists.txt b/simulate/CMakeLists.txt
+index 3c961a8..48ebf2e 100644
+--- a/simulate/CMakeLists.txt
++++ b/simulate/CMakeLists.txt
+@@ -43,4 +43,6 @@ link_libraries(
+ 
+ add_executable(unitree_mujoco ${SIM_SRC} src/main.cc)
+ 
+-add_executable(jstest src/joystick/jstest.cc src/joystick/joystick.cc)
+\ No newline at end of file
++add_executable(lowstate_probe EXCLUDE_FROM_ALL tests/lowstate_probe.cc)
++
++add_executable(jstest src/joystick/jstest.cc src/joystick/joystick.cc)
+diff --git a/simulate/config.yaml b/simulate/config.yaml
+index 53a7fa5..019d342 100644
+--- a/simulate/config.yaml
++++ b/simulate/config.yaml
+@@ -1,5 +1,5 @@
+-robot: "g1"
+-robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1.xml"
++robot: "r1"
++robot_scene: "/home/aimat/mayyar/unitree_mujoco/unitree_robots/r1/scene.xml"
+ #robot: "g1_23dof"
+ #robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1_23dof.xml"
+ #robot: "h1_2"
+@@ -14,7 +14,8 @@ interface: "lo" # Interface
+ 
+ use_joystick: 1 # Simulate Unitree WirelessController using a gamepad
+ joystick_type: "xbox" # support "xbox" and "switch" gamepad layout
+-joystick_device: "/dev/input/js0" # Device path
++#joystick_device: "/dev/input/js0" # Device path
++joystick_device: "/dev/input/js1"
+ joystick_bits: 16 # Some game controllers may only have 8-bit accuracy
+ 
+ print_scene_information: 1 # Print link, joint and sensors information of robot
+diff --git a/simulate/src/main.cc b/simulate/src/main.cc
+index 11983ea..1e6c828 100755
+--- a/simulate/src/main.cc
++++ b/simulate/src/main.cc
+@@ -584,7 +584,10 @@ void *UnitreeSdk2BridgeThread(void *arg)
+     usleep(500000);
+   }
+ 
+-  unitree::robot::ChannelFactory::Instance()->Init(param::config.domain_id, param::config.interface);
++  // An explicit interface makes SDK2 supply its own XML, overriding CYCLONEDDS_URI.
++  const char* dds_uri = std::getenv("CYCLONEDDS_URI");
++  unitree::robot::ChannelFactory::Instance()->Init(
++      param::config.domain_id, dds_uri && *dds_uri ? "" : param::config.interface);
+ 
+ 
+   int body_id = mj_name2id(m, mjOBJ_BODY, "torso_link");
+diff --git a/simulate/src/unitree_sdk2_bridge.h b/simulate/src/unitree_sdk2_bridge.h
+index 9a5a0b6..711c73d 100644
+--- a/simulate/src/unitree_sdk2_bridge.h
++++ b/simulate/src/unitree_sdk2_bridge.h
+@@ -223,6 +223,11 @@ public:
+             }
+             
+             lowstate->msg_.tick() = std::round(mj_data_->time / 1e-3);
++            static int counter = 0;
++if (++counter % 1000 == 0) {
++    std::cout << "[DEBUG] rt/lowstate publishing, motors="
++              << num_motor_ << std::endl;
++}
+             lowstate->unlockAndPublish();
+         }
+         // highstate
+diff --git a/src/assets/robots/unitree_r1/xmls/r1.xml b/src/assets/robots/unitree_r1/xmls/r1.xml
+index 7d67650..76bfcf4 100644
+--- a/src/assets/robots/unitree_r1/xmls/r1.xml
++++ b/src/assets/robots/unitree_r1/xmls/r1.xml
+@@ -234,12 +234,13 @@
+       </body>
+     </body>
+   </worldbody>
+-  <contact>
+-    <exclude body1="left_elbow_link" body2="left_wrist_pitch_link"/>
+-    <exclude body1="right_elbow_link" body2="right_wrist_pitch_link"/>
+-    <exclude body1="pelvis" body2="right_hip_roll_link"/>
+-    <exclude body1="pelvis" body2="left_hip_roll_link"/>
+-  </contact>
++ <contact>
++  <exclude body1="left_elbow_link" body2="left_wrist_roll_link"/>
++  <exclude body1="right_elbow_link" body2="right_wrist_roll_link"/>
++  <exclude body1="pelvis" body2="right_hip_roll_link"/>
++  <exclude body1="pelvis" body2="left_hip_roll_link"/>
++</contact> 
++ 
+   <sensor>
+     <gyro name="imu_ang_vel" site="imu"/>
+     <velocimeter name="imu_lin_vel" site="imu"/>

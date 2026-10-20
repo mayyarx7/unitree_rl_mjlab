@@ -119,7 +119,8 @@ inline std::filesystem::path parser_policy_dir(std::filesystem::path policy_dir)
 namespace po = boost::program_options;
 
 //※ This function must be called at the beginning of main() function
-inline po::variables_map helper(int argc, char** argv) 
+inline po::variables_map helper(int argc, char** argv,
+                                const po::options_description& extra = po::options_description())
 {
     bin_path = get_bin_path();
     load_config_file();
@@ -133,6 +134,7 @@ inline po::variables_map helper(int argc, char** argv)
         ;
 
     po::variables_map vm;
+    desc.add(extra);
     po::store(po::parse_command_line(argc, argv, desc), vm);
     po::notify(vm);
 

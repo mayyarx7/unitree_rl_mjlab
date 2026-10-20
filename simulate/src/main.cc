@@ -325,7 +325,46 @@ namespace
   }
 
   // simulate in background thread (while rendering in main thread)
-  void PhysicsLoop(mj::Simulate &sim)
+  
+// Initialpose fuer Unitree R1 entsprechend der Velocity-Policy.
+void SetR1StartPose(const mjModel* model, mjData* data)
+{
+  if (!model || !data) return;
+
+  // Andere Robotermodelle nicht veraendern.
+  if (mj_name2id(model, mjOBJ_BODY, "torso_link") < 0 ||
+      model->nu != 29 || model->nq < 7) return;
+
+  const int actuator_ids[24] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26};
+  const mjtNum positions[24] = {-0.1, 0, 0, 0.3, -0.2, 0, -0.1, 0, 0, 0.3, -0.2, 0, 0, 0, 0.35, 0.18, 0, 0.87, 0, 0.35, -0.18, 0, 0.87, 0};
+
+  // Erst alle Indizes validieren.
+  for (int i = 0; i < 24; ++i) {
+    int actuator_id = actuator_ids[i];
+    if (actuator_id < 0 || actuator_id >= model->nu) return;
+    int joint_id = model->actuator_trnid[2 * actuator_id];
+    if (joint_id < 0 || joint_id >= model->njnt) return;
+    if (model->jnt_qposadr[joint_id] < 0 ||
+        model->jnt_qposadr[joint_id] >= model->nq) return;
+  }
+
+  data->qpos[2] = 0.74;
+  data->qpos[3] = 1.0;
+  data->qpos[4] = 0.0;
+  data->qpos[5] = 0.0;
+  data->qpos[6] = 0.0;
+
+  for (int i = 0; i < 24; ++i) {
+    int joint_id = model->actuator_trnid[2 * actuator_ids[i]];
+    int qpos_id = model->jnt_qposadr[joint_id];
+    data->qpos[qpos_id] = positions[i];
+  }
+
+  mju_zero(data->qvel, model->nv);
+  mju_zero(data->ctrl, model->nu);
+}
+
+void PhysicsLoop(mj::Simulate &sim)
   {
     // cpu-sim syncronization point
     std::chrono::time_point<mj::Simulate::Clock> syncCPU;
@@ -355,6 +394,7 @@ namespace
 
           m = mnew;
           d = dnew;
+          SetR1StartPose(m, d);
           mj_forward(m, d);
 
           // allocate ctrlnoise
@@ -385,6 +425,7 @@ namespace
 
           m = mnew;
           d = dnew;
+          SetR1StartPose(m, d);
           mj_forward(m, d);
 
           // allocate ctrlnoise
@@ -548,6 +589,7 @@ void PhysicsThread(mj::Simulate *sim, const char *filename)
     if (d)
     {
       sim->Load(m, d, filename);
+      SetR1StartPose(m, d);
       mj_forward(m, d);
 
       // allocate ctrlnoise
@@ -584,7 +626,10 @@ void *UnitreeSdk2BridgeThread(void *arg)
     usleep(500000);
   }
 
-  unitree::robot::ChannelFactory::Instance()->Init(param::config.domain_id, param::config.interface);
+  // An explicit interface makes SDK2 supply its own XML, overriding CYCLONEDDS_URI.
+  const char* dds_uri = std::getenv("CYCLONEDDS_URI");
+  unitree::robot::ChannelFactory::Instance()->Init(
+      param::config.domain_id, dds_uri && *dds_uri ? "" : param::config.interface);
 
 
   int body_id = mj_name2id(m, mjOBJ_BODY, "torso_link");
@@ -633,6 +678,7 @@ void user_key_cb(GLFWwindow* window, int key, int scancode, int act, int mods) {
     }
     if(key==GLFW_KEY_BACKSPACE) {
       mj_resetData(m, d);
+      SetR1StartPose(m, d);
       mj_forward(m, d);
     }
   }

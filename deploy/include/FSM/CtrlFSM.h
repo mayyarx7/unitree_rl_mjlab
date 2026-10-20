@@ -45,10 +45,25 @@ public:
         }
     }
 
-    void start() 
+    void start(const std::string& initial_state = "Passive")
     {
-        // Start From State_Passive
-        currentState = states[0];
+        currentState = nullptr;
+
+        for (const auto& state : states)
+        {
+            if (state->getStateString() == initial_state)
+            {
+                currentState = state;
+                break;
+            }
+        }
+
+        if (!currentState)
+        {
+            throw std::runtime_error(
+                "FSM: Unknown initial state " + initial_state);
+        }
+
         currentState->enter();
 
         fsm_thread_ = std::make_shared<unitree::common::RecurrentThread>(

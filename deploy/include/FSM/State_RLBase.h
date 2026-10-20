@@ -15,12 +15,17 @@ public:
     void enter()
     {
         // set gain
-        for (int i = 0; i < env->robot->data.joint_stiffness.size(); ++i)
+        for (size_t i = 0; i < env->robot->data.joint_ids_map.size(); ++i)
         {
-            lowcmd->msg_.motor_cmd()[i].kp() = env->robot->data.joint_stiffness[i];
-            lowcmd->msg_.motor_cmd()[i].kd() = env->robot->data.joint_damping[i];
-            lowcmd->msg_.motor_cmd()[i].dq() = 0;
-            lowcmd->msg_.motor_cmd()[i].tau() = 0;
+            const int motor_id =
+                static_cast<int>(env->robot->data.joint_ids_map[i]);
+
+            auto& cmd = lowcmd->msg_.motor_cmd()[motor_id];
+
+            cmd.kp() = env->robot->data.joint_stiffness[i];
+            cmd.kd() = env->robot->data.joint_damping[i];
+            cmd.dq() = 0.0f;
+            cmd.tau() = 0.0f;
         }
 
         env->robot->update();

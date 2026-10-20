@@ -1,0 +1,758 @@
+--- git commit ---
+1425b15f73bd4095f0df53709d7c389c3eb9e790
+
+
+--- git status ---
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   deploy/include/FSM/CtrlFSM.h
+	modified:   deploy/include/FSM/State_RLBase.h
+	modified:   deploy/include/param.h
+	modified:   deploy/robots/r1/CMakeLists.txt
+	modified:   deploy/robots/r1/config/policy/velocity/v0/params/deploy.yaml
+	modified:   deploy/robots/r1/main.cpp
+	modified:   simulate/CMakeLists.txt
+	modified:   simulate/config.yaml
+	modified:   simulate/src/main.cc
+	modified:   simulate/src/unitree_sdk2_bridge.h
+	modified:   src/assets/robots/unitree_r1/xmls/r1.xml
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	check_r1_start_pose.py
+	compare_r1_scales.py
+	cyclonedds_local.xml
+	deploy/include/FSM/CtrlFSM.h.before_velocity_test
+	deploy/include/FSM/State_RLBase.h.bak
+	deploy/robots/r1/config/policy/velocity/v0/exported/
+	deploy/robots/r1/config/policy/velocity/v0/params/deploy.yaml.bak
+	deploy/robots/r1/main.cpp.before_velocity_test
+	docs/
+	patch_r1_start.py
+	ps5_receiver.py
+	simulate/src/main.cc.before_r1_pose
+	simulate/tests/
+	src/__pycache__/
+	src/assets/__pycache__/
+	src/assets/robots/__pycache__/
+	src/assets/robots/unitree_a2/__pycache__/
+	src/assets/robots/unitree_as2/__pycache__/
+	src/assets/robots/unitree_g1/__pycache__/
+	src/assets/robots/unitree_go2/__pycache__/
+	src/assets/robots/unitree_h1_2/__pycache__/
+	src/assets/robots/unitree_h2/__pycache__/
+	src/assets/robots/unitree_r1/__pycache__/
+	src/tasks/__pycache__/
+	src/tasks/tracking/__pycache__/
+	src/tasks/tracking/config/__pycache__/
+	src/tasks/tracking/config/g1/__pycache__/
+	src/tasks/tracking/config/g1_23dof/__pycache__/
+	src/tasks/tracking/mdp/__pycache__/
+	src/tasks/tracking/rl/__pycache__/
+	src/tasks/velocity/__pycache__/
+	src/tasks/velocity/config/__pycache__/
+	src/tasks/velocity/config/a2/__pycache__/
+	src/tasks/velocity/config/as2/__pycache__/
+	src/tasks/velocity/config/g1/__pycache__/
+	src/tasks/velocity/config/g1_23dof/__pycache__/
+	src/tasks/velocity/config/go2/__pycache__/
+	src/tasks/velocity/config/h1_2/__pycache__/
+	src/tasks/velocity/config/h2/__pycache__/
+	src/tasks/velocity/config/r1/__pycache__/
+	src/tasks/velocity/mdp/__pycache__/
+	src/tasks/velocity/rl/__pycache__/
+	test_r1_fall.py
+
+no changes added to commit (use "git add" and/or "git commit -a") 
+
+
+--- git diff ---
+diff --git a/deploy/include/FSM/CtrlFSM.h b/deploy/include/FSM/CtrlFSM.h
+index 62aacf2..7c15808 100644
+--- a/deploy/include/FSM/CtrlFSM.h
++++ b/deploy/include/FSM/CtrlFSM.h
+@@ -45,10 +45,25 @@ public:
+         }
+     }
+ 
+-    void start() 
++    void start(const std::string& initial_state = "Passive")
+     {
+-        // Start From State_Passive
+-        currentState = states[0];
++        currentState = nullptr;
++
++        for (const auto& state : states)
++        {
++            if (state->getStateString() == initial_state)
++            {
++                currentState = state;
++                break;
++            }
++        }
++
++        if (!currentState)
++        {
++            throw std::runtime_error(
++                "FSM: Unknown initial state " + initial_state);
++        }
++
+         currentState->enter();
+ 
+         fsm_thread_ = std::make_shared<unitree::common::RecurrentThread>(
+diff --git a/deploy/include/FSM/State_RLBase.h b/deploy/include/FSM/State_RLBase.h
+index 059a62f..6c43788 100644
+--- a/deploy/include/FSM/State_RLBase.h
++++ b/deploy/include/FSM/State_RLBase.h
+@@ -15,12 +15,17 @@ public:
+     void enter()
+     {
+         // set gain
+-        for (int i = 0; i < env->robot->data.joint_stiffness.size(); ++i)
++        for (size_t i = 0; i < env->robot->data.joint_ids_map.size(); ++i)
+         {
+-            lowcmd->msg_.motor_cmd()[i].kp() = env->robot->data.joint_stiffness[i];
+-            lowcmd->msg_.motor_cmd()[i].kd() = env->robot->data.joint_damping[i];
+-            lowcmd->msg_.motor_cmd()[i].dq() = 0;
+-            lowcmd->msg_.motor_cmd()[i].tau() = 0;
++            const int motor_id =
++                static_cast<int>(env->robot->data.joint_ids_map[i]);
++
++            auto& cmd = lowcmd->msg_.motor_cmd()[motor_id];
++
++            cmd.kp() = env->robot->data.joint_stiffness[i];
++            cmd.kd() = env->robot->data.joint_damping[i];
++            cmd.dq() = 0.0f;
++            cmd.tau() = 0.0f;
+         }
+ 
+         env->robot->update();
+diff --git a/deploy/include/param.h b/deploy/include/param.h
+index dae4bb4..3c83189 100644
+--- a/deploy/include/param.h
++++ b/deploy/include/param.h
+@@ -119,7 +119,8 @@ inline std::filesystem::path parser_policy_dir(std::filesystem::path policy_dir)
+ namespace po = boost::program_options;
+ 
+ //※ This function must be called at the beginning of main() function
+-inline po::variables_map helper(int argc, char** argv) 
++inline po::variables_map helper(int argc, char** argv,
++                                const po::options_description& extra = po::options_description())
+ {
+     bin_path = get_bin_path();
+     load_config_file();
+@@ -133,6 +134,7 @@ inline po::variables_map helper(int argc, char** argv)
+         ;
+ 
+     po::variables_map vm;
++    desc.add(extra);
+     po::store(po::parse_command_line(argc, argv, desc), vm);
+     po::notify(vm);
+ 
+@@ -161,4 +163,4 @@ inline po::variables_map helper(int argc, char** argv)
+     return vm;
+ }
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/deploy/robots/r1/CMakeLists.txt b/deploy/robots/r1/CMakeLists.txt
+index c0f94da..62ee51c 100644
+--- a/deploy/robots/r1/CMakeLists.txt
++++ b/deploy/robots/r1/CMakeLists.txt
+@@ -1,6 +1,7 @@
+ cmake_minimum_required(VERSION 3.12)
+ project(r1_controller)
+-
++list(APPEND CMAKE_PREFIX_PATH "/opt/unitree_robotics/lib/cmake")
++find_package(unitree_sdk2 REQUIRED)
+ set(CMAKE_CXX_STANDARD 17)
+ 
+ find_package(Boost REQUIRED COMPONENTS program_options)
+@@ -14,9 +15,10 @@ elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+ endif()
+ 
+ include_directories(
++  /opt/unitree_robotics/include
++  /opt/unitree_robotics/include/ddscxx
++  /opt/unitree_robotics/include/iceoryx/v2.0.2
+   /usr/include/eigen3
+-  /usr/local/include/ddscxx
+-  /usr/local/include/iceoryx/v2.0.2
+   include
+   ${ONNXRUNTIME_DIR}/include
+   ${PROJECT_SOURCE_DIR}/../../include/
+@@ -48,4 +50,4 @@ file(GLOB_RECURSE ADD_SRC_LIST
+ add_library(${PROJECT_NAME}_lib ${ADD_SRC_LIST})
+ link_libraries(${PROJECT_NAME}_lib)
+ 
+-add_executable(r1_ctrl main.cpp)
+\ No newline at end of file
++add_executable(r1_ctrl main.cpp)
+diff --git a/deploy/robots/r1/config/policy/velocity/v0/params/deploy.yaml b/deploy/robots/r1/config/policy/velocity/v0/params/deploy.yaml
+index d736d6f..6e4bcac 100644
+--- a/deploy/robots/r1/config/policy/velocity/v0/params/deploy.yaml
++++ b/deploy/robots/r1/config/policy/velocity/v0/params/deploy.yaml
+@@ -1,62 +1,291 @@
+-joint_ids_map: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,15,16,17,18,19,22,23,24,25,26]
++joint_ids_map:
++- 0
++- 1
++- 2
++- 3
++- 4
++- 5
++- 6
++- 7
++- 8
++- 9
++- 10
++- 11
++- 12
++- 13
++- 15
++- 16
++- 17
++- 18
++- 19
++- 22
++- 23
++- 24
++- 25
++- 26
+ step_dt: 0.02
+-stiffness: [100, 100, 100, 100, 40, 40,  100, 100, 100, 100, 40, 40,  100, 100,
+-            40, 40, 20, 20, 20,  40, 40, 20, 20, 20]
+-damping:   [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+-            2, 2, 1, 1, 1, 2, 2, 1, 1, 1]
+-default_joint_pos: [-0.1,0,0,0.3,-0.2,0, -0.1,0,0,0.3,-0.2,0,  0,0,  0.35,0.18,0,0.87,0, 0.35,-0.18,0,0.87,0]
+-
++stiffness:
++- 100
++- 100
++- 100
++- 100
++- 40
++- 40
++- 100
++- 100
++- 100
++- 100
++- 40
++- 40
++- 100
++- 100
++- 40
++- 40
++- 20
++- 20
++- 20
++- 40
++- 40
++- 20
++- 20
++- 20
++damping:
++- 2
++- 2
++- 2
++- 2
++- 2
++- 2
++- 2
++- 2
++- 2
++- 2
++- 2
++- 2
++- 2
++- 2
++- 2
++- 2
++- 1
++- 1
++- 1
++- 2
++- 2
++- 1
++- 1
++- 1
++default_joint_pos:
++- -0.1
++- 0
++- 0
++- 0.3
++- -0.2
++- 0
++- -0.1
++- 0
++- 0
++- 0.3
++- -0.2
++- 0
++- 0
++- 0
++- 0.35
++- 0.18
++- 0
++- 0.87
++- 0
++- 0.35
++- -0.18
++- 0
++- 0.87
++- 0
+ commands:
+   base_velocity:
+     ranges:
+-      lin_vel_x: [-0.5, 1.0]
+-      lin_vel_y: [-0.5, 0.5]
+-      ang_vel_z: [-1.0, 1.0]
++      lin_vel_x:
++      - -0.5
++      - 1.0
++      lin_vel_y:
++      - -0.5
++      - 0.5
++      ang_vel_z:
++      - -1.0
++      - 1.0
+       heading: null
+ actions:
+   JointPositionAction:
+     clip: null
+-    joint_names: [.*]
+-    scale: [0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25,
+-            0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25]
+-    offset: [-0.1,0,0,0.3,-0.2,0, -0.1,0,0,0.3,-0.2,0,  0,0,  0.35,0.18,0,0.87,0, 0.35,-0.18,0,0.87,0]
++    joint_names:
++    - .*
++    scale:
++    - 0.15
++    - 0.15
++    - 0.15
++    - 0.15
++    - 0.312
++    - 0.312
++    - 0.15
++    - 0.15
++    - 0.15
++    - 0.15
++    - 0.312
++    - 0.312
++    - 0.15
++    - 0.15
++    - 0.375
++    - 0.375
++    - 0.412
++    - 0.412
++    - 0.412
++    - 0.375
++    - 0.375
++    - 0.412
++    - 0.412
++    - 0.412
++    offset:
++    - -0.1
++    - 0
++    - 0
++    - 0.3
++    - -0.2
++    - 0
++    - -0.1
++    - 0
++    - 0
++    - 0.3
++    - -0.2
++    - 0
++    - 0
++    - 0
++    - 0.35
++    - 0.18
++    - 0
++    - 0.87
++    - 0
++    - 0.35
++    - -0.18
++    - 0
++    - 0.87
++    - 0
+     joint_ids: null
+ observations:
+   base_ang_vel:
+     params: {}
+     clip: null
+-    scale: [1.0, 1.0, 1.0]
++    scale:
++    - 1.0
++    - 1.0
++    - 1.0
+     history_length: 1
+   projected_gravity:
+     params: {}
+     clip: null
+-    scale: [1.0, 1.0, 1.0]
++    scale:
++    - 1.0
++    - 1.0
++    - 1.0
+     history_length: 1
+   velocity_commands:
+-    params: {command_name: base_velocity}
++    params:
++      command_name: base_velocity
+     clip: null
+-    scale: [1.0, 1.0, 1.0]
++    scale:
++    - 1.0
++    - 1.0
++    - 1.0
+     history_length: 1
+   gait_phase:
+-    params: {period: 0.6}
++    params:
++      period: 0.6
+     clip: null
+-    scale: [1.0, 1.0]
++    scale:
++    - 1.0
++    - 1.0
+     history_length: 1
+   joint_pos_rel:
+     params: {}
+     clip: null
+-    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+-            1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
++    scale:
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
+     history_length: 1
+   joint_vel_rel:
+     params: {}
+     clip: null
+-    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+-            1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
++    scale:
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
+     history_length: 1
+   last_action:
+     params: {}
+     clip: null
+-    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+-            1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
++    scale:
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
++    - 1.0
+     history_length: 1
+diff --git a/deploy/robots/r1/main.cpp b/deploy/robots/r1/main.cpp
+index 9c35909..6e39fec 100644
+--- a/deploy/robots/r1/main.cpp
++++ b/deploy/robots/r1/main.cpp
+@@ -2,6 +2,7 @@
+ #include "FSM/State_Passive.h"
+ #include "FSM/State_FixStand.h"
+ #include "FSM/State_RLBase.h"
++#include <cstdlib>
+ 
+ std::unique_ptr<LowCmd_t> FSMState::lowcmd = nullptr;
+ std::shared_ptr<LowState_t> FSMState::lowstate = nullptr;
+@@ -27,13 +28,38 @@ void init_fsm_state()
+ int main(int argc, char** argv)
+ {
+     // Load parameters
+-    auto vm = param::helper(argc, argv);
++    param::po::options_description extra("R1 diagnostics");
++    extra.add_options()
++        ("lowstate-only", "Receive LowState without publishing motor commands or starting the FSM")
++        ("start-velocity", "SIMULATION ONLY: start directly in Velocity");
++    auto vm = param::helper(argc, argv, extra);
+ 
+     std::cout << " --- Unitree Robotics --- \n";
+     std::cout << "     R1 Controller \n";
+ 
+     // Unitree DDS Config
+-    unitree::robot::ChannelFactory::Instance()->Init(0, vm["network"].as<std::string>());
++    // An explicit interface makes SDK2 supply its own XML, overriding CYCLONEDDS_URI.
++    const char* dds_uri = std::getenv("CYCLONEDDS_URI");
++    unitree::robot::ChannelFactory::Instance()->Init(
++        0, dds_uri && *dds_uri ? "" : vm["network"].as<std::string>());
++
++    if (vm.count("lowstate-only")) {
++        FSMState::lowstate = std::make_shared<LowState_t>();
++        spdlog::info("Waiting for connection to robot...");
++        FSMState::lowstate->wait_for_connection();
++        spdlog::info("Connected to robot.");
++        uint32_t previous_tick = 0;
++        while (true) {
++            sleep(1);
++            std::lock_guard<std::mutex> lock(FSMState::lowstate->mutex_);
++            spdlog::info("LowState: tick={}, mode_machine={}",
++                         FSMState::lowstate->msg_.tick(), FSMState::lowstate->msg_.mode_machine());
++            if (FSMState::lowstate->msg_.tick() == previous_tick) {
++                spdlog::warn("LowState tick has not advanced (simulation paused or reception stalled).");
++            }
++            previous_tick = FSMState::lowstate->msg_.tick();
++        }
++    }
+ 
+     init_fsm_state();
+ 
+@@ -45,7 +71,15 @@ int main(int argc, char** argv)
+     
+     // Initialize FSM
+     auto fsm = std::make_unique<CtrlFSM>(param::config["FSM"]);
+-    fsm->start();
++    if (vm.count("start-velocity"))
++    {
++        spdlog::warn("SIMULATION TEST: Starting directly in Velocity");
++        fsm->start("Velocity");
++    }
++    else
++    {
++        fsm->start();
++    }
+ 
+     std::cout << "Press [L2 + Up] to enter FixStand mode.\n";
+     std::cout << "And then press [R1 + X] to start controlling the robot.\n";
+diff --git a/simulate/CMakeLists.txt b/simulate/CMakeLists.txt
+index 3c961a8..48ebf2e 100644
+--- a/simulate/CMakeLists.txt
++++ b/simulate/CMakeLists.txt
+@@ -43,4 +43,6 @@ link_libraries(
+ 
+ add_executable(unitree_mujoco ${SIM_SRC} src/main.cc)
+ 
+-add_executable(jstest src/joystick/jstest.cc src/joystick/joystick.cc)
+\ No newline at end of file
++add_executable(lowstate_probe EXCLUDE_FROM_ALL tests/lowstate_probe.cc)
++
++add_executable(jstest src/joystick/jstest.cc src/joystick/joystick.cc)
+diff --git a/simulate/config.yaml b/simulate/config.yaml
+index 53a7fa5..019d342 100644
+--- a/simulate/config.yaml
++++ b/simulate/config.yaml
+@@ -1,5 +1,5 @@
+-robot: "g1"
+-robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1.xml"
++robot: "r1"
++robot_scene: "/home/aimat/mayyar/unitree_mujoco/unitree_robots/r1/scene.xml"
+ #robot: "g1_23dof"
+ #robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1_23dof.xml"
+ #robot: "h1_2"
+@@ -14,7 +14,8 @@ interface: "lo" # Interface
+ 
+ use_joystick: 1 # Simulate Unitree WirelessController using a gamepad
+ joystick_type: "xbox" # support "xbox" and "switch" gamepad layout
+-joystick_device: "/dev/input/js0" # Device path
++#joystick_device: "/dev/input/js0" # Device path
++joystick_device: "/dev/input/js1"
+ joystick_bits: 16 # Some game controllers may only have 8-bit accuracy
+ 
+ print_scene_information: 1 # Print link, joint and sensors information of robot
+diff --git a/simulate/src/main.cc b/simulate/src/main.cc
+index 11983ea..1e5da83 100755
+--- a/simulate/src/main.cc
++++ b/simulate/src/main.cc
+@@ -325,7 +325,46 @@ namespace
+   }
+ 
+   // simulate in background thread (while rendering in main thread)
+-  void PhysicsLoop(mj::Simulate &sim)
++  
++// Initialpose fuer Unitree R1 entsprechend der Velocity-Policy.
++void SetR1StartPose(const mjModel* model, mjData* data)
++{
++  if (!model || !data) return;
++
++  // Andere Robotermodelle nicht veraendern.
++  if (mj_name2id(model, mjOBJ_BODY, "torso_link") < 0 ||
++      model->nu != 29 || model->nq < 7) return;
++
++  const int actuator_ids[24] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26};
++  const mjtNum positions[24] = {-0.1, 0, 0, 0.3, -0.2, 0, -0.1, 0, 0, 0.3, -0.2, 0, 0, 0, 0.35, 0.18, 0, 0.87, 0, 0.35, -0.18, 0, 0.87, 0};
++
++  // Erst alle Indizes validieren.
++  for (int i = 0; i < 24; ++i) {
++    int actuator_id = actuator_ids[i];
++    if (actuator_id < 0 || actuator_id >= model->nu) return;
++    int joint_id = model->actuator_trnid[2 * actuator_id];
++    if (joint_id < 0 || joint_id >= model->njnt) return;
++    if (model->jnt_qposadr[joint_id] < 0 ||
++        model->jnt_qposadr[joint_id] >= model->nq) return;
++  }
++
++  data->qpos[2] = 0.74;
++  data->qpos[3] = 1.0;
++  data->qpos[4] = 0.0;
++  data->qpos[5] = 0.0;
++  data->qpos[6] = 0.0;
++
++  for (int i = 0; i < 24; ++i) {
++    int joint_id = model->actuator_trnid[2 * actuator_ids[i]];
++    int qpos_id = model->jnt_qposadr[joint_id];
++    data->qpos[qpos_id] = positions[i];
++  }
++
++  mju_zero(data->qvel, model->nv);
++  mju_zero(data->ctrl, model->nu);
++}
++
++void PhysicsLoop(mj::Simulate &sim)
+   {
+     // cpu-sim syncronization point
+     std::chrono::time_point<mj::Simulate::Clock> syncCPU;
+@@ -355,6 +394,7 @@ namespace
+ 
+           m = mnew;
+           d = dnew;
++          SetR1StartPose(m, d);
+           mj_forward(m, d);
+ 
+           // allocate ctrlnoise
+@@ -385,6 +425,7 @@ namespace
+ 
+           m = mnew;
+           d = dnew;
++          SetR1StartPose(m, d);
+           mj_forward(m, d);
+ 
+           // allocate ctrlnoise
+@@ -548,6 +589,7 @@ void PhysicsThread(mj::Simulate *sim, const char *filename)
+     if (d)
+     {
+       sim->Load(m, d, filename);
++      SetR1StartPose(m, d);
+       mj_forward(m, d);
+ 
+       // allocate ctrlnoise
+@@ -584,7 +626,10 @@ void *UnitreeSdk2BridgeThread(void *arg)
+     usleep(500000);
+   }
+ 
+-  unitree::robot::ChannelFactory::Instance()->Init(param::config.domain_id, param::config.interface);
++  // An explicit interface makes SDK2 supply its own XML, overriding CYCLONEDDS_URI.
++  const char* dds_uri = std::getenv("CYCLONEDDS_URI");
++  unitree::robot::ChannelFactory::Instance()->Init(
++      param::config.domain_id, dds_uri && *dds_uri ? "" : param::config.interface);
+ 
+ 
+   int body_id = mj_name2id(m, mjOBJ_BODY, "torso_link");
+@@ -633,6 +678,7 @@ void user_key_cb(GLFWwindow* window, int key, int scancode, int act, int mods) {
+     }
+     if(key==GLFW_KEY_BACKSPACE) {
+       mj_resetData(m, d);
++      SetR1StartPose(m, d);
+       mj_forward(m, d);
+     }
+   }
+diff --git a/simulate/src/unitree_sdk2_bridge.h b/simulate/src/unitree_sdk2_bridge.h
+index 9a5a0b6..711c73d 100644
+--- a/simulate/src/unitree_sdk2_bridge.h
++++ b/simulate/src/unitree_sdk2_bridge.h
+@@ -223,6 +223,11 @@ public:
+             }
+             
+             lowstate->msg_.tick() = std::round(mj_data_->time / 1e-3);
++            static int counter = 0;
++if (++counter % 1000 == 0) {
++    std::cout << "[DEBUG] rt/lowstate publishing, motors="
++              << num_motor_ << std::endl;
++}
+             lowstate->unlockAndPublish();
+         }
+         // highstate
+diff --git a/src/assets/robots/unitree_r1/xmls/r1.xml b/src/assets/robots/unitree_r1/xmls/r1.xml
+index 7d67650..76bfcf4 100644
+--- a/src/assets/robots/unitree_r1/xmls/r1.xml
++++ b/src/assets/robots/unitree_r1/xmls/r1.xml
+@@ -234,12 +234,13 @@
+       </body>
+     </body>
+   </worldbody>
+-  <contact>
+-    <exclude body1="left_elbow_link" body2="left_wrist_pitch_link"/>
+-    <exclude body1="right_elbow_link" body2="right_wrist_pitch_link"/>
+-    <exclude body1="pelvis" body2="right_hip_roll_link"/>
+-    <exclude body1="pelvis" body2="left_hip_roll_link"/>
+-  </contact>
++ <contact>
++  <exclude body1="left_elbow_link" body2="left_wrist_roll_link"/>
++  <exclude body1="right_elbow_link" body2="right_wrist_roll_link"/>
++  <exclude body1="pelvis" body2="right_hip_roll_link"/>
++  <exclude body1="pelvis" body2="left_hip_roll_link"/>
++</contact> 
++ 
+   <sensor>
+     <gyro name="imu_ang_vel" site="imu"/>
+     <velocimeter name="imu_lin_vel" site="imu"/>

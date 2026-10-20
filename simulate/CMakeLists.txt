@@ -43,4 +43,6 @@ link_libraries(
 
 add_executable(unitree_mujoco ${SIM_SRC} src/main.cc)
 
+add_executable(lowstate_probe EXCLUDE_FROM_ALL tests/lowstate_probe.cc)
+
 add_executable(jstest src/joystick/jstest.cc src/joystick/joystick.cc)

@@ -1,0 +1,24 @@
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain Id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="lo" multicast="false"/>
+      </Interfaces>
+      <AllowMulticast>false</AllowMulticast>
+      <!-- Local UDP transport drops payloads above 1472 bytes. Use RTPS
+           fragmentation instead of relying on larger UDP datagrams. -->
+      <MaxMessageSize>1456 B</MaxMessageSize>
+    </General>
+<Tracing>
+  <Verbosity>finest</Verbosity>
+  <OutputFile>/tmp/cyclonedds-${CYCLONEDDS_PID}.log</OutputFile>
+</Tracing>
+    <Discovery>
+      <!-- Unicast peers probe the standard participant ports. -->
+      <ParticipantIndex>auto</ParticipantIndex>
+      <Peers>
+        <Peer Address="127.0.0.1"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

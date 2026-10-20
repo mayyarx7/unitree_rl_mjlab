@@ -223,6 +223,11 @@ public:
             }
             
             lowstate->msg_.tick() = std::round(mj_data_->time / 1e-3);
+            static int counter = 0;
+if (++counter % 1000 == 0) {
+    std::cout << "[DEBUG] rt/lowstate publishing, motors="
+              << num_motor_ << std::endl;
+}
             lowstate->unlockAndPublish();
         }
         // highstate

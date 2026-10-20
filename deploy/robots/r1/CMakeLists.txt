@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.12)
 project(r1_controller)
-
+list(APPEND CMAKE_PREFIX_PATH "/opt/unitree_robotics/lib/cmake")
+find_package(unitree_sdk2 REQUIRED)
 set(CMAKE_CXX_STANDARD 17)
 
 find_package(Boost REQUIRED COMPONENTS program_options)
@@ -14,9 +15,10 @@ elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
 endif()
 
 include_directories(
+  /opt/unitree_robotics/include
+  /opt/unitree_robotics/include/ddscxx
+  /opt/unitree_robotics/include/iceoryx/v2.0.2
   /usr/include/eigen3
-  /usr/local/include/ddscxx
-  /usr/local/include/iceoryx/v2.0.2
   include
   ${ONNXRUNTIME_DIR}/include
   ${PROJECT_SOURCE_DIR}/../../include/
