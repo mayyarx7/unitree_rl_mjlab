@@ -1,5 +1,5 @@
 robot: "r1"
-robot_scene: "/home/aimat/mayyar/unitree_mujoco/unitree_robots/r1/scene.xml"
+robot_scene: "src/assets/robots/unitree_r1/xmls/scene_kuka.xml"
 #robot: "g1_23dof"
 #robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1_23dof.xml"
 #robot: "h1_2"
@@ -12,12 +12,20 @@ robot_scene: "/home/aimat/mayyar/unitree_mujoco/unitree_robots/r1/scene.xml"
 domain_id: 0  # Domain id
 interface: "lo" # Interface
 
-use_joystick: 1 # Simulate Unitree WirelessController using a gamepad
+use_joystick: 0 # Simulate Unitree WirelessController using a gamepad
 joystick_type: "xbox" # support "xbox" and "switch" gamepad layout
 #joystick_device: "/dev/input/js0" # Device path
-joystick_device: "/dev/input/js1"
+joystick_device: "/dev/input/js2"
 joystick_bits: 16 # Some game controllers may only have 8-bit accuracy
 
 print_scene_information: 1 # Print link, joint and sensors information of robot
 
 enable_elastic_band: 0 # Virtual spring band, used for lifting h1
+
+# Head camera: rendered as the R1's fisheye (head_camera.json, from arena-r1-kit) and published
+# where mediamtx serves the robot's camera; start mediamtx with mediamtx_sim.yml first.
+head_camera: 1
+head_camera_model: "head_camera.json"
+head_camera_fps: 15
+head_camera_url: "rtsp://127.0.0.1:8554/robot"
+ffmpeg: "/home/mayyar/tools/ffmpeg/ffmpeg"

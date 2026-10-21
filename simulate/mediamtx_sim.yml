@@ -1,0 +1,37 @@
+# arena-r1-kit/mediamtx.yml for the simulator: the path "robot" takes the simulated head camera
+# (published by unitree_mujoco, head_camera_url) instead of pulling the robot's camera.
+# mediamtx for stream.py --webrtc: the head camera's RTSP stream to the headset page as WebRTC,
+# passed through without re-encoding (the stream has no B-frames).
+#   ~/tools/mediamtx/mediamtx mediamtx.yml
+# Signalling only on this laptop, through stream.py's /whep. No STUN or TURN server:
+# nothing leaves the local network.
+logLevel: info
+api: false
+metrics: false
+pprof: false
+playback: false
+rtmp: false
+hls: false
+srt: false
+moq: false
+
+# RTSP server only so a recorded file can be published to the test path.
+rtsp: true
+rtspAddress: 127.0.0.1:8554
+rtspTransports: [tcp]
+
+webrtc: true
+webrtcAddress: 127.0.0.1:8889
+# The video goes over the USB cable only: adb reverse carries TCP, and the Quest reaches the laptop as
+# 127.0.0.1:8189. No UDP and no interface addresses, or a headset on Wi-Fi takes a lossy Wi-Fi path.
+webrtcLocalUDPAddress: ''
+webrtcLocalTCPAddress: 127.0.0.1:8189
+webrtcIPsFromInterfaces: false
+webrtcAdditionalHosts: [127.0.0.1]
+webrtcICEServers2: []
+
+paths:
+  robot:
+    source: publisher
+  test:
+    source: publisher

@@ -34,6 +34,10 @@ public:
         // Init Model
         env = Ort::Env(ORT_LOGGING_LEVEL_WARNING, "onnx_model");
         session_options.SetGraphOptimizationLevel(ORT_ENABLE_EXTENDED);
+        // A small policy at 50 Hz: one thread, no spinning between runs (the default pool spun two cores
+        // at all times, slowing the simulator and every other process).
+        session_options.SetIntraOpNumThreads(1);
+        session_options.AddConfigEntry("session.intra_op.allow_spinning", "0");
 
         session = std::make_unique<Ort::Session>(env, model_path.c_str(), session_options);
 

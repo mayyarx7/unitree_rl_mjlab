@@ -2,6 +2,8 @@
 #include "FSM/State_Passive.h"
 #include "FSM/State_FixStand.h"
 #include "FSM/State_RLBase.h"
+#include "loco_server.h"
+#include "arm_sdk.h"
 #include <cstdlib>
 
 std::unique_ptr<LowCmd_t> FSMState::lowcmd = nullptr;
@@ -31,7 +33,10 @@ int main(int argc, char** argv)
     param::po::options_description extra("R1 diagnostics");
     extra.add_options()
         ("lowstate-only", "Receive LowState without publishing motor commands or starting the FSM")
-        ("start-velocity", "SIMULATION ONLY: start directly in Velocity");
+        ("start-velocity", "SIMULATION ONLY: start directly in Velocity")
+        ("cmd-source", param::po::value<std::string>()->default_value("joystick"),
+         "velocity command: joystick (the remote's sticks) or sport (the walking service, SetVelocity)")
+        ("arm-sdk", "take upper-body commands on rt/arm_sdk in Velocity, blended by their weight");
     auto vm = param::helper(argc, argv, extra);
 
     std::cout << " --- Unitree Robotics --- \n";
@@ -61,7 +66,19 @@ int main(int argc, char** argv)
         }
     }
 
+    const auto cmd_source = vm["cmd-source"].as<std::string>();
+    if (cmd_source != "joystick" && cmd_source != "sport") {
+        spdlog::critical("--cmd-source must be joystick or sport, got {}", cmd_source);
+        exit(-1);
+    }
+    // Made before the FSM, so the Velocity state takes its commands from it.
+    if (cmd_source == "sport") loco_server = std::make_shared<LocoServer>();
+
     init_fsm_state();
+    if (vm.count("arm-sdk")) {
+        arm_sdk = std::make_shared<ArmSdk>();
+        spdlog::info("Upper body: rt/arm_sdk blended in Velocity (arms, waist yaw, head).");
+    }
 
     FSMState::lowcmd->msg_.mode_machine() = 1;
     if(!FSMState::lowcmd->check_mode_machine(FSMState::lowstate)) {
@@ -74,11 +91,41 @@ int main(int argc, char** argv)
     if (vm.count("start-velocity"))
     {
         spdlog::warn("SIMULATION TEST: Starting directly in Velocity");
+        // As if FixStand had run: its gains and final pose hold every joint the policy does not drive (the head).
+        auto fix = param::config["FSM"]["FixStand"];
+        auto kp = fix["kp"].as<std::vector<float>>();
+        auto kd = fix["kd"].as<std::vector<float>>();
+        auto q = fix["qs"].as<std::vector<std::vector<float>>>().back();
+        for (size_t i = 0; i < kp.size(); ++i) {
+            auto& motor = FSMState::lowcmd->msg_.motor_cmd()[i];
+            motor.kp() = kp[i];
+            motor.kd() = kd[i];
+            motor.q() = q[i];
+            motor.dq() = motor.tau() = 0;
+        }
         fsm->start("Velocity");
     }
     else
     {
         fsm->start();
+    }
+
+    if (loco_server) {
+        const int velocity_id = FSMStringMap.right.at("Velocity");
+        CtrlFSM* f = fsm.get();
+        loco_server->set_fsm_id([f, velocity_id] {
+            const int id = f->currentStateId();
+            if (id != velocity_id) return id;
+            // As on Unitree's controller: 816 while arm_sdk holds the upper body, and no walking then.
+            return arm_sdk && arm_sdk->active() ? LocoServer::FSM_ARM_SDK : LocoServer::FSM_WALKING;
+        });
+        loco_server->set_accepting([f, velocity_id] {
+            return f->currentStateId() == velocity_id && !(arm_sdk && arm_sdk->active());
+        });
+        loco_server->Init();
+        loco_server->Start(false);
+        spdlog::info("Velocity commands from the walking service ({}); the remote's sticks are ignored.",
+                     unitree::robot::r1::LOCO_SERVICE_NAME);
     }
 
     std::cout << "Press [L2 + Up] to enter FixStand mode.\n";

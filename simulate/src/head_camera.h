@@ -1,0 +1,354 @@
+// The R1 head camera in simulation: renders the head's views offscreen (EGL, its own thread),
+// resamples them into the real camera's fisheye picture (OpenCV fisheye model, same size and
+// intrinsics as on the robot) and publishes it as H.264 over RTSP through ffmpeg, where the
+// robot's camera stream would be.
+
+#pragma once
+
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <mujoco/mujoco.h>
+#include <yaml-cpp/yaml.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <csignal>
+#include <cstdio>
+#include <functional>
+#include <iostream>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+struct HeadCameraConfig
+{
+    std::string model_path;          // opencv_fisheye JSON, as arena-r1-kit's r1/head_camera.json
+    std::vector<std::string> cameras; // MJCF cameras whose views together cover the fisheye
+    int view_size = 640;             // square render size per view, pixels
+    int fps = 30;
+    std::string url;                 // RTSP publish address
+    std::string ffmpeg = "ffmpeg";
+};
+
+class HeadCamera
+{
+public:
+    // lock_model returns the model and data to read while the lock is held.
+    using Locker = std::function<std::unique_lock<std::recursive_mutex>(const mjModel*&, mjData*&)>;
+
+    HeadCamera(HeadCameraConfig cfg, Locker locker) : cfg_(std::move(cfg)), locker_(std::move(locker)) {}
+
+    void run(const std::atomic_int& exit)
+    {
+        std::signal(SIGPIPE, SIG_IGN);  // ffmpeg exiting must not end the simulator
+        if (!load_fisheye()) return;
+        if (!make_gl()) return;
+
+        const mjModel* built_for = nullptr;
+        auto next = std::chrono::steady_clock::now();
+        const auto period = std::chrono::microseconds(1000000 / cfg_.fps);
+        std::vector<unsigned char> out(width_ * height_ * 3);
+
+        while (!exit.load()) {
+            std::this_thread::sleep_until(next);
+            next += period;
+            if (std::chrono::steady_clock::now() > next) next = std::chrono::steady_clock::now() + period;
+
+            const auto t0 = std::chrono::steady_clock::now();
+            {
+                const mjModel* m = nullptr;
+                mjData* d = nullptr;
+                auto lock = locker_(m, d);
+                t_lock_ += std::chrono::steady_clock::now() - t0;
+                if (!m || !d) continue;
+                if (m != built_for) {
+                    if (!build(m)) { lock.unlock(); std::this_thread::sleep_for(std::chrono::seconds(1)); continue; }
+                    built_for = m;
+                }
+                for (size_t i = 0; i < views_.size(); ++i) {
+                    mjv_updateScene(m, d, &opt_, nullptr, &views_[i].cam, mjCAT_ALL, &views_[i].scn);
+                }
+            }
+            const auto t1 = std::chrono::steady_clock::now();
+            mjrRect vp = {0, 0, cfg_.view_size, cfg_.view_size};
+            for (auto& v : views_) {
+                mjr_render(vp, &v.scn, &con_);
+                mjr_readPixels(v.rgb.data(), nullptr, vp, &con_);
+            }
+            const auto t2 = std::chrono::steady_clock::now();
+            resample(out);
+            const auto t3 = std::chrono::steady_clock::now();
+            publish(out);
+            const auto t4 = std::chrono::steady_clock::now();
+            t_scene_ += t1 - t0; t_render_ += t2 - t1; t_resample_ += t3 - t2; t_publish_ += t4 - t3;
+            if (++frames_ % (5 * cfg_.fps) == 0) {
+                auto ms = [this](std::chrono::steady_clock::duration x) {
+                    return std::chrono::duration<double, std::milli>(x).count() / (5 * cfg_.fps);
+                };
+                std::cout << "[head camera] per frame ms: lock " << ms(t_lock_) << " scene " << ms(t_scene_)
+                          << " render " << ms(t_render_) << " resample " << ms(t_resample_) << " publish "
+                          << ms(t_publish_) << std::endl;
+                t_lock_ = t_scene_ = t_render_ = t_resample_ = t_publish_ = {};
+            }
+        }
+        close_ffmpeg();
+    }
+
+private:
+    struct View
+    {
+        int camid = -1;
+        mjvCamera cam;
+        mjvScene scn;
+        std::vector<unsigned char> rgb;
+    };
+    // Per fisheye pixel: the view (-1: outside every view), the top-left source byte and bilinear weights (x256).
+    struct Tap { int view; int offset; uint16_t ax, ay; };
+
+    bool load_fisheye()
+    {
+        try {
+            auto j = YAML::LoadFile(cfg_.model_path);
+            if (j["model"].as<std::string>() != "opencv_fisheye") throw std::runtime_error("not opencv_fisheye");
+            width_ = j["width"].as<int>();
+            height_ = j["height"].as<int>();
+            fx_ = j["fx"].as<double>(); fy_ = j["fy"].as<double>();
+            cx_ = j["cx"].as<double>(); cy_ = j["cy"].as<double>();
+            k_ = j["d"].as<std::vector<double>>();
+            if (k_.size() != 4) throw std::runtime_error("d needs 4 coefficients");
+        } catch (const std::exception& e) {
+            std::cerr << "[head camera] " << cfg_.model_path << ": " << e.what() << "; camera off\n";
+            return false;
+        }
+        return true;
+    }
+
+    // The NVIDIA GPU as an EGL device, if there is one: the default display is often the integrated GPU.
+    EGLDisplay discrete_display()
+    {
+        auto query = (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
+        auto platform = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+        if (!query || !platform) return EGL_NO_DISPLAY;
+        EGLDeviceEXT devices[8];
+        EGLint n = 0;
+        if (!query(8, devices, &n)) return EGL_NO_DISPLAY;
+        for (EGLint i = 0; i < n; ++i) {
+            EGLDisplay dpy = platform(EGL_PLATFORM_DEVICE_EXT, devices[i], nullptr);
+            if (dpy == EGL_NO_DISPLAY || !eglInitialize(dpy, nullptr, nullptr)) continue;
+            const char* vendor = eglQueryString(dpy, EGL_VENDOR);
+            if (vendor && std::string(vendor).find("NVIDIA") != std::string::npos) return dpy;
+            eglTerminate(dpy);
+        }
+        return EGL_NO_DISPLAY;
+    }
+
+    bool make_gl()
+    {
+        dpy_ = discrete_display();
+        if (dpy_ == EGL_NO_DISPLAY) dpy_ = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+        if (dpy_ == EGL_NO_DISPLAY || !eglInitialize(dpy_, nullptr, nullptr)) {
+            std::cerr << "[head camera] no EGL display; camera off\n";
+            return false;
+        }
+        const EGLint attr[] = {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+                               EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_DEPTH_SIZE, 24, EGL_NONE};
+        EGLConfig conf;
+        EGLint n = 0;
+        if (!eglChooseConfig(dpy_, attr, &conf, 1, &n) || n < 1 || !eglBindAPI(EGL_OPENGL_API)) {
+            std::cerr << "[head camera] no EGL OpenGL config; camera off\n";
+            return false;
+        }
+        const EGLint pb[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
+        surf_ = eglCreatePbufferSurface(dpy_, conf, pb);
+        ctx_ = eglCreateContext(dpy_, conf, EGL_NO_CONTEXT, nullptr);
+        if (ctx_ == EGL_NO_CONTEXT || !eglMakeCurrent(dpy_, surf_, surf_, ctx_)) {
+            std::cerr << "[head camera] EGL context failed; camera off\n";
+            return false;
+        }
+        mjv_defaultOption(&opt_);
+        mjr_defaultContext(&con_);
+        std::cout << "[head camera] EGL " << eglQueryString(dpy_, EGL_VENDOR) << std::endl;
+        return true;
+    }
+
+    // Context, scenes and the fisheye lookup for a (new) model.
+    bool build(const mjModel* m)
+    {
+        if (m->vis.global.offwidth < cfg_.view_size || m->vis.global.offheight < cfg_.view_size) {
+            std::cerr << "[head camera] the model's offscreen buffer is smaller than view_size " << cfg_.view_size
+                      << "; set <visual><global offwidth offheight> in the MJCF\n";
+            return false;
+        }
+        for (auto& v : views_) mjv_freeScene(&v.scn);
+        views_.clear();
+        mjr_freeContext(&con_);
+        mjr_makeContext(m, &con_, mjFONTSCALE_100);
+        mjr_setBuffer(mjFB_OFFSCREEN, &con_);
+
+        for (const auto& name : cfg_.cameras) {
+            int id = mj_name2id(m, mjOBJ_CAMERA, name.c_str());
+            if (id < 0) {
+                std::cerr << "[head camera] camera " << name << " not in the model\n";
+                return false;
+            }
+            View v;
+            v.camid = id;
+            mjv_defaultCamera(&v.cam);
+            v.cam.type = mjCAMERA_FIXED;
+            v.cam.fixedcamid = id;
+            mjv_defaultScene(&v.scn);
+            mjv_makeScene(m, &v.scn, 10000);
+            // Shadows and the floor's reflection cost most of the render time and show the operator nothing.
+            v.scn.flags[mjRND_SHADOW] = 0;
+            v.scn.flags[mjRND_REFLECTION] = 0;
+            v.rgb.resize(cfg_.view_size * cfg_.view_size * 3);
+            views_.push_back(std::move(v));
+        }
+        // All views share one body: the fisheye's frame is that body's, x forward, y left, z up.
+        build_lookup(m);
+        std::cout << "[head camera] " << views_.size() << " views of " << cfg_.view_size << " px -> fisheye "
+                  << width_ << "x" << height_ << " at " << cfg_.fps << " fps, " << cfg_.url << std::endl;
+        return true;
+    }
+
+    void build_lookup(const mjModel* m)
+    {
+        taps_.assign(width_ * height_, Tap{-1, 0, 0, 0});
+        const double half = cfg_.view_size / 2.0;
+        std::vector<std::array<double, 9>> axes;
+        std::vector<double> focal;
+        for (auto& v : views_) {
+            std::array<double, 9> R;
+            mju_quat2Mat(R.data(), m->cam_quat + 4 * v.camid);  // columns: camera x, y, z in the body
+            axes.push_back(R);
+            focal.push_back(half / std::tan(m->cam_fovy[v.camid] * M_PI / 360.0));
+        }
+        int covered = 0;
+        for (int py = 0; py < height_; ++py) {
+            for (int px = 0; px < width_; ++px) {
+                double ray[3];
+                fisheye_ray(px + 0.5, py + 0.5, ray);
+                // OpenCV camera (x right, y down, z forward) to the body (x forward, y left, z up).
+                const double b[3] = {ray[2], -ray[0], -ray[1]};
+                int best = -1;
+                double best_fwd = 0, bu = 0, bv = 0;
+                for (size_t i = 0; i < views_.size(); ++i) {
+                    const auto& R = axes[i];
+                    double cxv = b[0] * R[0] + b[1] * R[3] + b[2] * R[6];
+                    double cyv = b[0] * R[1] + b[1] * R[4] + b[2] * R[7];
+                    double fwd = -(b[0] * R[2] + b[1] * R[5] + b[2] * R[8]);  // cameras look along -z
+                    if (fwd <= 1e-6) continue;
+                    double u = half + focal[i] * cxv / fwd;
+                    double v = half - focal[i] * cyv / fwd;  // from the top
+                    if (u < 0 || v < 0 || u > cfg_.view_size - 1 || v > cfg_.view_size - 1) continue;
+                    if (fwd > best_fwd) { best = int(i); best_fwd = fwd; bu = u; bv = v; }
+                }
+                if (best >= 0) {
+                    // readPixels rows run bottom to top.
+                    const double fu = std::min(bu, cfg_.view_size - 1.001);
+                    const double fv = std::min(cfg_.view_size - 1 - bv, cfg_.view_size - 1.001);
+                    const int x0 = int(fu), y0 = int(fv);
+                    taps_[py * width_ + px] = Tap{best, 3 * (y0 * cfg_.view_size + x0),
+                                                  uint16_t((fu - x0) * 256), uint16_t((fv - y0) * 256)};
+                    ++covered;
+                }
+            }
+        }
+        if (covered < width_ * height_) {
+            std::cout << "[head camera] " << (width_ * height_ - covered) << " fisheye pixels outside every view (black)"
+                      << std::endl;
+        }
+    }
+
+    // OpenCV fisheye: pixel to unit ray (x right, y down, z forward); Newton on theta_d = theta(1 + k1 t^2 + ...).
+    void fisheye_ray(double u, double v, double* r) const
+    {
+        const double x = (u - cx_) / fx_, y = (v - cy_) / fy_;
+        const double td = std::hypot(x, y);
+        double t = td;
+        for (int i = 0; i < 20; ++i) {
+            const double t2 = t * t;
+            const double f = t * (1 + t2 * (k_[0] + t2 * (k_[1] + t2 * (k_[2] + t2 * k_[3])))) - td;
+            const double df = 1 + t2 * (3 * k_[0] + t2 * (5 * k_[1] + t2 * (7 * k_[2] + t2 * 9 * k_[3])));
+            t -= f / df;
+        }
+        const double s = td > 1e-12 ? std::sin(t) / td : 1.0;
+        r[0] = x * s; r[1] = y * s; r[2] = std::cos(t);
+    }
+
+    void resample(std::vector<unsigned char>& out) const
+    {
+        const int threads = std::max(2u, std::thread::hardware_concurrency() / 2), n = width_ * height_;
+        std::vector<std::thread> pool;
+        for (int t = 0; t < threads; ++t) {
+            pool.emplace_back([this, &out, t, n, threads] { resample_rows(out, n * t / threads, n * (t + 1) / threads); });
+        }
+        for (auto& th : pool) th.join();
+    }
+
+    void resample_rows(std::vector<unsigned char>& out, int begin, int end) const
+    {
+        const int row = 3 * cfg_.view_size;
+        for (int i = begin; i < end; ++i) {
+            const Tap& t = taps_[i];
+            unsigned char* o = &out[3 * i];
+            if (t.view < 0) { o[0] = o[1] = o[2] = 0; continue; }
+            const unsigned char* p = views_[t.view].rgb.data() + t.offset;
+            const int ax = t.ax, ay = t.ay;
+            for (int c = 0; c < 3; ++c) {
+                const int top = p[c] * (256 - ax) + p[c + 3] * ax;
+                const int bot = p[c + row] * (256 - ax) + p[c + row + 3] * ax;
+                o[c] = static_cast<unsigned char>((top * (256 - ay) + bot * ay + 32768) >> 16);
+            }
+        }
+    }
+
+    void publish(const std::vector<unsigned char>& frame)
+    {
+        auto now = std::chrono::steady_clock::now();
+        if (!pipe_) {
+            if (now < retry_at_) return;
+            retry_at_ = now + std::chrono::seconds(2);
+            // Frames are stamped when they arrive, not at a nominal rate: when rendering falls behind
+            // the nominal fps, nominal stamps run ahead of real time and the player's buffer (the
+            // Quest's jitter buffer) grows into seconds of delay.
+            const std::string cmd = cfg_.ffmpeg + " -hide_banner -loglevel error -use_wallclock_as_timestamps 1"
+                " -f rawvideo -pix_fmt rgb24 -s " + std::to_string(width_) + "x" + std::to_string(height_) +
+                " -i - -fps_mode passthrough -c:v libx264 -preset ultrafast -tune zerolatency -g " +
+                std::to_string(cfg_.fps) + " -pix_fmt yuv420p -f rtsp -rtsp_transport tcp " + cfg_.url;
+            pipe_ = popen(cmd.c_str(), "w");
+            if (!pipe_) return;
+            std::cout << "[head camera] publishing to " << cfg_.url << std::endl;
+        }
+        if (fwrite(frame.data(), 1, frame.size(), pipe_) != frame.size() || fflush(pipe_) != 0) {
+            std::cerr << "[head camera] ffmpeg stopped (is mediamtx running?); retrying in 2 s\n";
+            close_ffmpeg();
+        }
+    }
+
+    void close_ffmpeg()
+    {
+        if (pipe_) { pclose(pipe_); pipe_ = nullptr; }
+    }
+
+    HeadCameraConfig cfg_;
+    Locker locker_;
+    int width_ = 0, height_ = 0;
+    double fx_ = 0, fy_ = 0, cx_ = 0, cy_ = 0;
+    std::vector<double> k_;
+    EGLDisplay dpy_ = EGL_NO_DISPLAY;
+    EGLSurface surf_ = EGL_NO_SURFACE;
+    EGLContext ctx_ = EGL_NO_CONTEXT;
+    mjvOption opt_;
+    mjrContext con_;
+    std::vector<View> views_;
+    std::vector<Tap> taps_;
+    FILE* pipe_ = nullptr;
+    long frames_ = 0;
+    std::chrono::steady_clock::duration t_lock_{}, t_scene_{}, t_render_{}, t_resample_{}, t_publish_{};
+    std::chrono::steady_clock::time_point retry_at_{};
+};

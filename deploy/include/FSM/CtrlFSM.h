@@ -7,6 +7,7 @@
 #include "BaseState.h"
 #include <spdlog/spdlog.h>
 #include <yaml-cpp/yaml.h>
+#include <atomic>
 
 class CtrlFSM
 {
@@ -65,6 +66,7 @@ public:
         }
 
         currentState->enter();
+        current_id_ = currentState->getState();
 
         fsm_thread_ = std::make_shared<unitree::common::RecurrentThread>(
             "FSM", 0, this->dt * 1e6, &CtrlFSM::run_, this);
@@ -89,6 +91,9 @@ public:
     {
         states.clear();
     }
+
+    // The current state's id; safe to read from other threads.
+    int currentStateId() const { return current_id_; }
 
     std::vector<std::shared_ptr<BaseState>> states;
 private:
@@ -121,6 +126,7 @@ private:
                     currentState->exit();
                     currentState = state;
                     currentState->enter();
+                    current_id_ = currentState->getState();
                     break;
                 }
             }
@@ -128,5 +134,6 @@ private:
     }
 
     std::shared_ptr<BaseState> currentState;
+    std::atomic<int> current_id_{0};
     unitree::common::RecurrentThreadPtr fsm_thread_;
 };

@@ -1,5 +1,7 @@
 #include "FSM/State_RLBase.h"
 #include "unitree_articulation.h"
+#include "loco_server.h"
+#include "arm_sdk.h"
 #include "isaaclab/envs/mdp/observations/observations.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
 
@@ -16,6 +18,12 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
     );
     env->alg = std::make_unique<isaaclab::OrtRunner>(policy_dir / "exported" / "policy.onnx");
 
+    if (loco_server) {
+        env->robot->data.velocity_command = [](float& vx, float& vy, float& wz) {
+            loco_server->command(vx, vy, wz);
+        };
+    }
+
     this->registered_checks.emplace_back(
         std::make_pair(
             [&]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), 1.0); },
@@ -29,5 +37,8 @@ void State_RLBase::run()
     auto action = env->action_manager->processed_actions();
     for(int i(0); i < env->robot->data.joint_ids_map.size(); i++) {
         lowcmd->msg_.motor_cmd()[env->robot->data.joint_ids_map[i]].q() = action[i];
+    }
+    if (arm_sdk) {
+        arm_sdk->apply(lowcmd->msg_, env->robot->data.joint_ids_map, lowstate->msg_.mode_machine());
     }
 }

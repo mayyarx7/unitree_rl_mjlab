@@ -34,6 +34,7 @@
 #include "array_safety.h"
 #include "unitree_sdk2_bridge.h"
 #include "param.h"
+#include "head_camera.h"
 
 #define MUJOCO_PLUGIN_DIR "mujoco_plugin"
 #define NUM_MOTOR_IDL_GO 20
@@ -733,10 +734,31 @@ int main(int argc, char **argv)
 
   // start physics thread
   std::thread physicsthreadhandle(&PhysicsThread, sim.get(), param::config.robot_scene.c_str());
+
+  std::thread head_camera_thread;
+  if (param::config.head_camera) {
+    if (param::config.head_camera_model.is_relative()) {
+      param::config.head_camera_model = proj_dir / param::config.head_camera_model;
+    }
+    HeadCameraConfig hc{param::config.head_camera_model.string(), param::config.head_camera_views,
+                        param::config.head_camera_view_size, param::config.head_camera_fps,
+                        param::config.head_camera_url, param::config.ffmpeg};
+    mj::Simulate* s = sim.get();
+    head_camera_thread = std::thread([hc, s] {
+      HeadCamera camera(hc, [s](const mjModel*& mm, mjData*& dd) {
+        std::unique_lock<std::recursive_mutex> lock(s->mtx);
+        mm = m;
+        dd = d;
+        return lock;
+      });
+      camera.run(s->exitrequest);
+    });
+  }
   // start simulation UI loop (blocking call)
   glfwSetKeyCallback(static_cast<mj::GlfwAdapter*>(sim->platform_ui.get())->window_,user_key_cb);
   sim->RenderLoop();
   physicsthreadhandle.join();
+  if (head_camera_thread.joinable()) head_camera_thread.join();
 
   pthread_exit(NULL);
   return 0;

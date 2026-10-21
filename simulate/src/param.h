@@ -26,6 +26,15 @@ inline struct SimulationConfig
     int enable_elastic_band;
     int band_attached_link = 0;
 
+    // Head camera (optional keys): rendered as the robot's fisheye and published over RTSP.
+    int head_camera = 0;
+    std::filesystem::path head_camera_model = "head_camera.json";
+    std::vector<std::string> head_camera_views = {"head_camera_left", "head_camera_right"};
+    int head_camera_view_size = 640;
+    int head_camera_fps = 30;
+    std::string head_camera_url = "rtsp://127.0.0.1:8554/robot";
+    std::string ffmpeg = "ffmpeg";
+
     void load_from_yaml(const std::string &filename)
     {
         auto cfg = YAML::LoadFile(filename);
@@ -41,6 +50,13 @@ inline struct SimulationConfig
             joystick_bits = cfg["joystick_bits"].as<int>();
             print_scene_information = cfg["print_scene_information"].as<int>();
             enable_elastic_band = cfg["enable_elastic_band"].as<int>();
+            if (cfg["head_camera"]) head_camera = cfg["head_camera"].as<int>();
+            if (cfg["head_camera_model"]) head_camera_model = cfg["head_camera_model"].as<std::string>();
+            if (cfg["head_camera_views"]) head_camera_views = cfg["head_camera_views"].as<std::vector<std::string>>();
+            if (cfg["head_camera_view_size"]) head_camera_view_size = cfg["head_camera_view_size"].as<int>();
+            if (cfg["head_camera_fps"]) head_camera_fps = cfg["head_camera_fps"].as<int>();
+            if (cfg["head_camera_url"]) head_camera_url = cfg["head_camera_url"].as<std::string>();
+            if (cfg["ffmpeg"]) ffmpeg = cfg["ffmpeg"].as<std::string>();
         }
         catch(const std::exception& e)
         {
@@ -63,6 +79,7 @@ inline po::variables_map helper(int argc, char** argv)
         ("network,n", po::value<std::string>(&config.interface), "DDS network interface; -n eth0")
         ("robot,r", po::value<std::string>(&config.robot), "Robot type; -r go2")
         ("scene,s", po::value<std::filesystem::path>(&config.robot_scene), "Robot scene file; -s scene_terrain.xml")
+        ("joystick,j", po::value<int>(&config.use_joystick), "Gamepad as the remote: 1 on, 0 off (overrides use_joystick)")
     ;
 
     po::variables_map vm;
