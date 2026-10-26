@@ -172,6 +172,12 @@
               <site name="head_camera" pos="0.092 0 -0.015" size="0.005" group="5"/>
               <camera name="head_camera_left" pos="0.092 0 -0.015" xyaxes="0.70711 -0.70711 0 0 0 1" fovy="110"/>
               <camera name="head_camera_right" pos="0.092 0 -0.015" xyaxes="-0.70711 -0.70711 0 0 0 1" fovy="110"/>
+              <!-- Stereo (head_camera_stereo): the same two views for each eye, the eyes 6.3 cm apart (assumed;
+                   set the R1's real camera spacing here once it is known). -->
+              <camera name="eye_left_view_left" pos="0.092 0.0315 -0.015" xyaxes="0.70711 -0.70711 0 0 0 1" fovy="110"/>
+              <camera name="eye_left_view_right" pos="0.092 0.0315 -0.015" xyaxes="-0.70711 -0.70711 0 0 0 1" fovy="110"/>
+              <camera name="eye_right_view_left" pos="0.092 -0.0315 -0.015" xyaxes="0.70711 -0.70711 0 0 0 1" fovy="110"/>
+              <camera name="eye_right_view_right" pos="0.092 -0.0315 -0.015" xyaxes="-0.70711 -0.70711 0 0 0 1" fovy="110"/>
             </body>
           </body>
           <body name="left_shoulder_pitch_link" pos="0 0.085688 0.19749" quat="0.99144 0.130561 0 0">

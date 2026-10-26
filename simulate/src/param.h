@@ -30,6 +30,10 @@ inline struct SimulationConfig
     int head_camera = 0;
     std::filesystem::path head_camera_model = "head_camera.json";
     std::vector<std::string> head_camera_views = {"head_camera_left", "head_camera_right"};
+    // Stereo: one fisheye per eye, one above the other (left eye on top), from these views.
+    int head_camera_stereo = 0;
+    std::vector<std::string> head_camera_left_eye = {"eye_left_view_left", "eye_left_view_right"};
+    std::vector<std::string> head_camera_right_eye = {"eye_right_view_left", "eye_right_view_right"};
     int head_camera_view_size = 640;
     int head_camera_fps = 30;
     std::string head_camera_url = "rtsp://127.0.0.1:8554/robot";
@@ -53,6 +57,9 @@ inline struct SimulationConfig
             if (cfg["head_camera"]) head_camera = cfg["head_camera"].as<int>();
             if (cfg["head_camera_model"]) head_camera_model = cfg["head_camera_model"].as<std::string>();
             if (cfg["head_camera_views"]) head_camera_views = cfg["head_camera_views"].as<std::vector<std::string>>();
+            if (cfg["head_camera_stereo"]) head_camera_stereo = cfg["head_camera_stereo"].as<int>();
+            if (cfg["head_camera_left_eye"]) head_camera_left_eye = cfg["head_camera_left_eye"].as<std::vector<std::string>>();
+            if (cfg["head_camera_right_eye"]) head_camera_right_eye = cfg["head_camera_right_eye"].as<std::vector<std::string>>();
             if (cfg["head_camera_view_size"]) head_camera_view_size = cfg["head_camera_view_size"].as<int>();
             if (cfg["head_camera_fps"]) head_camera_fps = cfg["head_camera_fps"].as<int>();
             if (cfg["head_camera_url"]) head_camera_url = cfg["head_camera_url"].as<std::string>();
@@ -80,6 +87,7 @@ inline po::variables_map helper(int argc, char** argv)
         ("robot,r", po::value<std::string>(&config.robot), "Robot type; -r go2")
         ("scene,s", po::value<std::filesystem::path>(&config.robot_scene), "Robot scene file; -s scene_terrain.xml")
         ("joystick,j", po::value<int>(&config.use_joystick), "Gamepad as the remote: 1 on, 0 off (overrides use_joystick)")
+        ("stereo", po::value<int>(&config.head_camera_stereo), "Head camera: 1 two eyes one above the other, 0 one (overrides head_camera_stereo)")
     ;
 
     po::variables_map vm;

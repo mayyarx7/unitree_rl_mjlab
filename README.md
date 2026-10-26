@@ -1,5 +1,113 @@
 # Unitree RL Mjlab
 
+> [!IMPORTANT]
+> **This is a fork** of [unitreerobotics/unitree_rl_mjlab](https://github.com/unitreerobotics/unitree_rl_mjlab)
+> for the Unitree **R1**: our own velocity policy, run in low-level mode, teleoperated from a Meta Quest
+> through [arena-r1-kit](https://github.com/MustafaOrhon/arena-r1-kit). The same controller binary runs
+> against the simulator (`--network lo`) and the real robot (`--network <eth>`); only the DDS interface
+> differs. The fork's changes are listed in [R1 fork](#-r1-fork); everything after it is the upstream README.
+
+## 🤖 R1 fork
+
+### What changed
+
+**Controller (`deploy/robots/r1/r1_ctrl`)** – it now offers the interfaces Unitree's own R1 controller
+offers, so arena-r1-kit drives our policy unchanged, in simulation and on the robot:
+
+| Option | Effect |
+|---|---|
+| `--cmd-source joystick` | Default, as upstream: velocity from the remote's sticks. |
+| `--cmd-source sport` | Serves the R1 walking service (`sport`, [`loco_server.h`](deploy/include/loco_server.h)): `SetVelocity` feeds the policy's velocity command, `GetFsmId` reports `811` (walking) in Velocity. Commands outside Velocity are refused; a command expires after its `duration`. The remote's sticks are ignored. |
+| `--arm-sdk` | Takes upper-body targets on `rt/arm_sdk` ([`arm_sdk.h`](deploy/include/arm_sdk.h)) as Unitree's controller does: both arms, waist yaw and head (joints 13, 15–19, 22–26, 29–30), blended over the policy by `mode_pr` (0–100). Frames with the wrong `mode_machine` are dropped; after 0.5 s without a frame the weight ramps out over 1.5 s. While it holds the joints, `GetFsmId` reports `816` and `SetVelocity` is refused. |
+| `--start-velocity` | **Simulation only.** Starts directly in Velocity with FixStand's gains and final pose, skipping the remote's `L2+Up` / `R1+X`. |
+| `--lowstate-only` | Diagnostics: waits for `LowState` and prints tick / `mode_machine` every second, sends no motor commands. |
+
+If `CYCLONEDDS_URI` is set, the controller leaves the interface to that XML instead of passing
+`--network` to SDK2 (which would override it); see [`cyclonedds_local.xml`](cyclonedds_local.xml) and
+[`docs/r1-dds-diagnose.md`](docs/r1-dds-diagnose.md) (German) for why LowState did not arrive on `lo`
+under WSL2 and the fragmentation fix.
+
+Other controller changes: `FixStand` in [`config.yaml`](deploy/robots/r1/config/config.yaml) also holds
+the head (joints 29–30), the R1 `deploy.yaml` matches the trained policy, and the R1 build uses
+`unitree_sdk2` from `/opt/unitree_robotics`.
+
+**Simulator (`simulate/`)** – defaults to the R1 in a scene with a KUKA cell
+(`src/assets/robots/unitree_r1/xmls/scene_kuka.xml`) and adds a simulated head camera
+([`head_camera.h`](simulate/src/head_camera.h)): the head's views are rendered offscreen over EGL,
+resampled into the real R1 fisheye ([`head_camera.json`](simulate/head_camera.json), same size and
+intrinsics as on the robot) and published as H.264 over RTSP via ffmpeg at the address where the robot's
+camera would be served, so arena-r1-kit's `stream.py` sees the same stream as on the robot.
+
+| `simulate/config.yaml` key / flag | Meaning |
+|---|---|
+| `head_camera: 1` | Enable the head camera (needs mediamtx running with [`mediamtx_sim.yml`](simulate/mediamtx_sim.yml)). |
+| `head_camera_model`, `head_camera_fps`, `head_camera_url` | Fisheye model, frame rate, RTSP publish address (default `rtsp://127.0.0.1:8554/robot`). |
+| `ffmpeg` | Path of the ffmpeg binary (set to a local path; adjust for your machine). |
+| `head_camera_stereo` / `--stereo 1` | Two eyes, stacked vertically (left on top) for depth in the Quest. Eye spacing is **assumed** 6.3 cm (`eye_*` cameras in `R1_C++.xml`) until the real R1 camera baseline is known. |
+| `use_joystick` / `--joystick 0\|1` | Gamepad as the remote; off by default now, since the Quest sends the velocity. |
+
+The viewer now creates its GL context over EGL, because a GLX context in the same process breaks the
+head camera's EGL context on NVIDIA PRIME.
+
+**Training** – R1 velocity runs and checkpoints are committed under `logs/rsl_rl/r1_velocity/`
+(latest: `2026-10-20_14-19-20`, up to `model_14999.pt`). Train or resume with the upstream commands below
+using task `Unitree-R1-Flat`.
+
+**Helper scripts** (repo root, ad hoc): `check_r1_start_pose.py`, `compare_r1_scales.py`,
+`test_r1_fall.py` (policy push test in plain MuJoCo), `patch_r1_start.py` (writes the policy's default
+pose into the simulator's start pose), `ps5_receiver.py` (PS5 pad over UDP, superseded by the Quest).
+Some contain absolute paths from the machine they were written on.
+
+### Build
+
+```bash
+# unitree_sdk2 installed to /opt/unitree_robotics; mediamtx and ffmpeg available
+cd deploy/robots/r1 && mkdir -p build && cd build && cmake .. && make -j
+cd ../../../../simulate && mkdir -p build && cd build && cmake .. && make -j
+```
+
+### Run in simulation with the Quest
+
+[`start_quest_sim.sh`](start_quest_sim.sh) starts everything in order and stops it with Ctrl+C. It
+expects `arena-r1-kit` (with its `.venv`) next to this repo, mediamtx in `~/tools/mediamtx/` and ffmpeg
+in `~/tools/ffmpeg/`; override with `ARENA=…`, `MEDIAMTX=…`, `FFMPEG_DIR=…`. Logs go to
+`logs/quest_sim/<time>/`. `--stereo` needs an arena-r1-kit with `stream.py --stereo`.
+
+```bash
+./start_quest_sim.sh              # walking: left stick walks, right stick turns
+./start_quest_sim.sh --upper      # plus head and right arm over rt/arm_sdk
+./start_quest_sim.sh --stereo     # stereo head camera (combinable with --upper)
+```
+
+What it runs, if you want to do it by hand:
+
+```bash
+mediamtx simulate/mediamtx_sim.yml                                   # 1. video relay
+cd deploy/robots/r1/build && ./r1_ctrl --network lo \
+    --cmd-source sport --arm-sdk --start-velocity                    # 2. controller
+cd simulate/build && ./unitree_mujoco --joystick 0 [--stereo 1]      # 3. simulator + head camera
+cd arena-r1-kit && .venv/bin/python stream.py --http --webrtc --walk \
+    --iface lo --source rtsp://127.0.0.1:8554/robot [--stereo] \
+    [--head --arm --teleop-scale 0.7 --arm-slew 40]                  # 4. Quest page on :8080
+adb reverse tcp:8080 tcp:8080 && adb reverse tcp:8189 tcp:8189      # 5. Quest over USB
+```
+
+Then open `http://localhost:8080` in the Quest browser and enter VR (`/flat` shows the video on the laptop).
+
+### Run on the real R1
+
+Same controller, without `--start-velocity`, on the robot's Ethernet interface:
+
+```bash
+./r1_ctrl --network <eth> --cmd-source sport --arm-sdk
+```
+
+Enter FixStand (`L2+Up`) and Velocity (`R1+X`) on the remote as usual, then point `stream.py` at the
+robot's interface and camera (`rtsp://192.168.123.161:8551/video`). The real R1 has two head cameras;
+whether they form a stereo pair usable for `--stereo` is still open.
+
+---
+
 
 ## ✳️ Overview
 Unitree RL Mjlab is a reinforcement learning project built upon the

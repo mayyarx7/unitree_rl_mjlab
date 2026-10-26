@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> **Fork for the Unitree R1** (own policy + Meta Quest teleop). The fork's changes are documented in English in [README.md](README.md#-r1-fork); the text below is the upstream README.
+
 # Unitree RL Mjlab
 
 

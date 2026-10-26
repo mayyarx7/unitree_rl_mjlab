@@ -740,7 +740,11 @@ int main(int argc, char **argv)
     if (param::config.head_camera_model.is_relative()) {
       param::config.head_camera_model = proj_dir / param::config.head_camera_model;
     }
-    HeadCameraConfig hc{param::config.head_camera_model.string(), param::config.head_camera_views,
+    std::vector<std::vector<std::string>> eyes = {param::config.head_camera_views};
+    if (param::config.head_camera_stereo) {
+      eyes = {param::config.head_camera_left_eye, param::config.head_camera_right_eye};
+    }
+    HeadCameraConfig hc{param::config.head_camera_model.string(), eyes,
                         param::config.head_camera_view_size, param::config.head_camera_fps,
                         param::config.head_camera_url, param::config.ffmpeg};
     mj::Simulate* s = sim.get();

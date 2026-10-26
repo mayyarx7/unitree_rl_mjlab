@@ -52,6 +52,9 @@ GlfwAdapter::GlfwAdapter() {
   // multisampling
   Glfw().glfwWindowHint(GLFW_SAMPLES, 4);
   Glfw().glfwWindowHint(GLFW_VISIBLE, 1);
+  // The viewer's context over EGL, not GLX: the head camera renders in its own EGL context, and with
+  // the desktop on NVIDIA (PRIME "nvidia") a GLX context in the same process stops that one working.
+  Glfw().glfwWindowHint(GLFW_CONTEXT_CREATION_API, GLFW_EGL_CONTEXT_API);
 
   // get video mode and save
   vidmode_ = *Glfw().glfwGetVideoMode(Glfw().glfwGetPrimaryMonitor());
