@@ -4,6 +4,8 @@
 #pragma once
 
 #include "FSMState.h"
+#include <chrono>
+#include <optional>
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
 #include "isaaclab/envs/mdp/terminations.h"
 
@@ -66,6 +68,12 @@ private:
 
     std::thread policy_thread;
     bool policy_thread_running = false;
+
+    // Robot-specific use (the R1's Perceptive holds its head tilted): a head pitch from the
+    // state's config, and when run() last ran, to tell a fresh entry into the state.
+    std::optional<float> head_pitch;
+    std::chrono::steady_clock::time_point last_run_{}, entered_{};
+    float head_from_ = 0.0f;
 };
 
 REGISTER_FSM(State_RLBase)

@@ -56,7 +56,7 @@ public:
             return note(false, "height map layout differs from the policy's");
         }
         const double age = std::chrono::duration<double>(clock::now() - at_).count();
-        if (age > max_age_s) return note(false, "height map older than " + std::to_string(max_age_s) + " s");
+        if (age > max_age_s) return note(false, fmt::format("height map older than {:g} s", max_age_s));
         out.assign(map_.data().begin(), map_.data().end());
         return note(true, "");
     }

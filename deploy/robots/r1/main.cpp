@@ -4,6 +4,7 @@
 #include "FSM/State_RLBase.h"
 #include "loco_server.h"
 #include "arm_sdk.h"
+#include "heightmap_input.h"
 #include <cstdlib>
 
 std::unique_ptr<LowCmd_t> FSMState::lowcmd = nullptr;
@@ -33,7 +34,9 @@ int main(int argc, char** argv)
     param::po::options_description extra("R1 diagnostics");
     extra.add_options()
         ("lowstate-only", "Receive LowState without publishing motor commands or starting the FSM")
-        ("start-velocity", "SIMULATION ONLY: start directly in Velocity")
+        ("start-velocity", "SIMULATION ONLY: start directly in Velocity (as --start-state Velocity)")
+        ("start-state", param::po::value<std::string>(),
+         "SIMULATION ONLY: start directly in this policy state (Velocity, Perceptive)")
         ("cmd-source", param::po::value<std::string>()->default_value("joystick"),
          "velocity command: joystick (the remote's sticks) or sport (the walking service, SetVelocity)")
         ("arm-sdk", "take upper-body commands on rt/arm_sdk in Velocity, blended by their weight");
@@ -88,9 +91,11 @@ int main(int argc, char** argv)
     
     // Initialize FSM
     auto fsm = std::make_unique<CtrlFSM>(param::config["FSM"]);
-    if (vm.count("start-velocity"))
+    std::string start_state = vm.count("start-state") ? vm["start-state"].as<std::string>() : "";
+    if (start_state.empty() && vm.count("start-velocity")) start_state = "Velocity";
+    if (!start_state.empty())
     {
-        spdlog::warn("SIMULATION TEST: Starting directly in Velocity");
+        spdlog::warn("SIMULATION TEST: Starting directly in {}", start_state);
         // As if FixStand had run: its gains and final pose hold every joint the policy does not drive (the head).
         auto fix = param::config["FSM"]["FixStand"];
         auto kp = fix["kp"].as<std::vector<float>>();
@@ -103,7 +108,7 @@ int main(int argc, char** argv)
             motor.q() = q[i];
             motor.dq() = motor.tau() = 0;
         }
-        fsm->start("Velocity");
+        fsm->start(start_state);
     }
     else
     {
@@ -112,15 +117,20 @@ int main(int argc, char** argv)
 
     if (loco_server) {
         const int velocity_id = FSMStringMap.right.at("Velocity");
+        const int perceptive_id = FSMStringMap.right.count("Perceptive") ? FSMStringMap.right.at("Perceptive") : -1;
         CtrlFSM* f = fsm.get();
-        loco_server->set_fsm_id([f, velocity_id] {
+        loco_server->set_fsm_id([f, velocity_id, perceptive_id] {
             const int id = f->currentStateId();
-            if (id != velocity_id) return id;
+            if (id != velocity_id && id != perceptive_id) return id;
             // As on Unitree's controller: 816 while arm_sdk holds the upper body, and no walking then.
             return arm_sdk && arm_sdk->active() ? LocoServer::FSM_ARM_SDK : LocoServer::FSM_WALKING;
         });
-        loco_server->set_accepting([f, velocity_id] {
-            return f->currentStateId() == velocity_id && !(arm_sdk && arm_sdk->active());
+        loco_server->set_accepting([f, velocity_id, perceptive_id] {
+            const int id = f->currentStateId();
+            if (arm_sdk && arm_sdk->active()) return false;
+            if (id == velocity_id) return true;
+            // Perceptive walks only on a fresh height map; without one the robot stands.
+            return id == perceptive_id && heightmap_input && !heightmap_input->falling_back();
         });
         loco_server->Init();
         loco_server->Start(false);

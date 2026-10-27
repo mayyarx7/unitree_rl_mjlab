@@ -68,19 +68,30 @@ public:
 
         // Joints the policy does not drive (the head) keep the command they had on the first cycle
         // (FixStand's hold), as the base to blend from and to return to.
-        if (!held_set_) {
-            for (int j : JOINTS) {
-                const auto& c = cmd.motor_cmd()[j];
-                held_[j] = {c.q(), c.kp(), c.kd()};
+        std::array<bool, 35> locked;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!held_set_) {
+                for (int j : JOINTS) {
+                    const auto& c = cmd.motor_cmd()[j];
+                    const float q = override_[j] ? held_[j].q : c.q();
+                    held_[j] = {q, c.kp(), c.kd()};
+                }
+                held_set_ = true;
             }
-            held_set_ = true;
+            base_ = held_;
+            locked = locked_;
         }
 
         for (int j : JOINTS) {
             auto& c = cmd.motor_cmd()[j];
             const bool policy = std::find(driven.begin(), driven.end(), float(j)) != driven.end();
             // The policy rewrites its joints every cycle; elsewhere blend from the held command.
-            const Cmd base = policy ? Cmd{c.q(), c.kp(), c.kd()} : held_[j];
+            const Cmd base = policy ? Cmd{c.q(), c.kp(), c.kd()} : base_[j];
+            if (locked[j] && !policy) {
+                c.q() = base.q; c.kp() = base.kp; c.kd() = base.kd;
+                continue;
+            }
             if (w <= 0.0) {
                 if (!policy) { c.q() = base.q; c.kp() = base.kp; c.kd() = base.kd; }
                 continue;
@@ -98,6 +109,16 @@ public:
     // Whether arm_sdk holds the joints (any weight): the walking service reports 816 then.
     bool active() const { return weight_ > 0.0; }
 
+    // A locked joint ignores the frames and keeps its held command (Perceptive's tilted head).
+    void lock(int joint, bool locked) { std::lock_guard<std::mutex> l(mutex_); locked_[joint] = locked; }
+    // The command a joint the policy does not drive is held at (and returns to).
+    void hold(int joint, float q)
+    {
+        std::lock_guard<std::mutex> l(mutex_);
+        held_[joint].q = q;
+        override_[joint] = true;
+    }
+
 private:
     using clock = std::chrono::steady_clock;
     struct Cmd { float q = 0, kp = 0, kd = 0; };
@@ -107,7 +128,8 @@ private:
     unitree_hg::msg::dds_::LowCmd_ frame_, last_;
     clock::time_point at_, last_at_;
     bool fresh_ = false, have_ = false, warned_ = false, held_set_ = false;
-    std::array<Cmd, 35> held_{};
+    std::array<Cmd, 35> held_{}, base_{};
+    std::array<bool, 35> locked_{}, override_{};
     std::atomic<double> weight_{0.0};
 };
 

@@ -7,6 +7,9 @@ FSM:
     Velocity:
       id: 3
       type: RLBase
+    Perceptive:
+      id: 4
+      type: RLBase
   Passive:
     transitions: 
       FixStand: LT + up.on_pressed
@@ -68,4 +71,13 @@ FSM:
   Velocity:
     transitions: 
       Passive: LT + B.on_pressed
+      Perceptive: RT + Y.on_pressed
     policy_dir: config/policy/velocity
+  # Walks on the height map from rt/heightmap (unitree_rl_mjlab/perception/heightmap_node.py).
+  # The head is held tilted down so the camera sees the ground ahead; arm_sdk leaves it alone here.
+  Perceptive:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RT + A.on_pressed
+    policy_dir: config/policy/perceptive
+    head_pitch: 0.45  # rad, 26 deg down: ground visible from about 0.5 m ahead (joint limit 0.63)
