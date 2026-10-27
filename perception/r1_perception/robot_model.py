@@ -28,8 +28,11 @@ class RobotModel:
         if self.camera < 0:
             raise ValueError(f"camera {camera} not in {mjcf}")
         self.feet = np.array([mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_BODY, f) for f in FEET])
-        # The robot's own geoms, to drop depth points on its body.
+        # The robot's own geoms and their bounding boxes (local centre, half size), to drop depth
+        # points on its body.
         self.geoms = np.array([g for g in range(self.m.ngeom) if self.m.geom_bodyid[g] > 0])
+        self.box_centre = self.m.geom_aabb[self.geoms, :3].copy()
+        self.box_half = self.m.geom_aabb[self.geoms, 3:].copy()
         # Sole below the ankle origin: the bottom of the foot's contact spheres, standing upright.
         self.update(np.zeros(self.num_motors), (1.0, 0.0, 0.0, 0.0))
         spheres = [g for g in self.geoms if self.m.geom_bodyid[g] == self.feet[0]
@@ -63,10 +66,17 @@ class RobotModel:
 
     def on_body(self, points: np.ndarray, margin: float = 0.03) -> np.ndarray:
         """Mask of the (N, 3) points inside one of the robot's geoms' boxes grown by margin."""
+        pos = self.d.geom_xpos[self.geoms]
+        rot = self.d.geom_xmat[self.geoms].reshape(-1, 3, 3)
+        half = self.box_half + margin
+        # Only points within the axis-aligned box that holds all boxes can be inside one; most of
+        # a frame lies outside it.
+        centres = pos + np.einsum("gij,gj->gi", rot, self.box_centre)
+        extent = np.einsum("gij,gj->gi", np.abs(rot), half)
+        low, high = np.min(centres - extent, axis=0), np.max(centres + extent, axis=0)
         inside = np.zeros(len(points), dtype=bool)
-        for g in self.geoms:
-            centre_local, half = self.m.geom_aabb[g, :3], self.m.geom_aabb[g, 3:] + margin
-            rot = self.d.geom_xmat[g].reshape(3, 3)
-            local = (points - self.d.geom_xpos[g]) @ rot - centre_local
-            inside |= np.all(np.abs(local) <= half, axis=1)
+        near = np.flatnonzero(np.all((points >= low) & (points <= high), axis=1))
+        if near.size:
+            local = np.einsum("ngi,gij->ngj", points[near, None, :] - pos, rot) - self.box_centre
+            inside[near] = np.all(np.abs(local) <= half, axis=2).any(axis=1)
         return inside

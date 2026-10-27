@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """The R1's height map for the perceptive policy: depth frames and rt/lowstate in, rt/heightmap out.
 
+    cpp/build/lowstate_shm &                            # rt/lowstate -> /dev/shm/r1_lowstate (first)
     .venv/bin/python heightmap_node.py                 # simulator: depth from /dev/shm/r1_depth, DDS on lo
     .venv/bin/python heightmap_node.py --iface eth0    # (robot: needs a depth source for its camera module)
 
-rt/lowstate drives the odometry at up to 200 Hz: the DDS callback only keeps the newest sample
-and the main loop takes it every 5 ms. Doing the work in the callback for all of the simulator's
-1000 samples a second starved the loop (Python's DDS library holds the GIL while it decodes),
-and 200 Hz tracks as well as all samples did on a recorded walk.
+rt/lowstate comes through cpp/lowstate_shm's ring buffer, every sample into the odometry: reading
+it with Python's DDS library starved the mapping (the library decodes all of the simulator's 1000
+messages a second while holding the GIL). Only rt/heightmap goes out through Python's DDS.
 
 Each depth frame (10 Hz) goes into the map and a scan goes out on rt/heightmap (unitree_go
 HeightMap_): 17 x 11 values, 0.1 m apart, origin (-0.8, -0.5) m, frame "pelvis_yaw", data rows
@@ -26,6 +26,7 @@ import time
 import numpy as np
 
 from r1_perception.depth_source import ShmDepthSource
+from r1_perception.lowstate_source import LowstateShmSource
 from r1_perception.mapper import SCAN_X, SCAN_Y, HeightMapper
 
 TOPIC_LOWSTATE = "rt/lowstate"
@@ -36,23 +37,17 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--iface", default="lo", help="DDS network interface (lo: the simulator)")
     ap.add_argument("--shm", default="/r1_depth", help="the simulator's depth shared memory")
+    ap.add_argument("--lowstate-shm", default="/r1_lowstate", help="cpp/lowstate_shm's ring buffer")
     args = ap.parse_args()
 
-    from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelPublisher, ChannelSubscriber
+    from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelPublisher
     from unitree_sdk2py.idl.unitree_go.msg.dds_ import HeightMap_
-    from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
 
     mapper = HeightMapper()
-    n = mapper.model.num_motors
     counts = {"lowstate": 0, "depth": 0, "unmatched": 0}
-    newest = [None]   # (tick, q, quat, arrival): replaced whole, so the loop never sees half of one
-
-    def on_lowstate(msg) -> None:
-        newest[0] = (msg.tick, [m.q for m in msg.motor_state[:n]], list(msg.imu_state.quaternion), time.time())
+    lowstate = LowstateShmSource(args.lowstate_shm)
 
     ChannelFactoryInitialize(0, args.iface)
-    sub = ChannelSubscriber(TOPIC_LOWSTATE, LowState_)
-    sub.Init(on_lowstate, 10)
     pub = ChannelPublisher(TOPIC_HEIGHTMAP, HeightMap_)
     pub.Init()
     source = ShmDepthSource(args.shm)
@@ -60,14 +55,12 @@ def main() -> None:
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
-    print(f"[heightmap] {TOPIC_LOWSTATE} on {args.iface}, depth from /dev/shm{args.shm}, publishing {TOPIC_HEIGHTMAP}",
-          flush=True)
-    report_at, latency, last_tick = time.time() + 2.0, [], None
+    print(f"[heightmap] {TOPIC_LOWSTATE} from /dev/shm{args.lowstate_shm}, depth from /dev/shm{args.shm}, "
+          f"publishing {TOPIC_HEIGHTMAP} on {args.iface}", flush=True)
+    report_at, latency = time.time() + 2.0, []
     while not stop.is_set():
-        sample = newest[0]
-        if sample is not None and sample[0] != last_tick:   # a new physics step / robot sample
-            last_tick = sample[0]
-            if mapper.on_lowstate(sample[1], sample[2], sample[0] / 1000.0, sample[3]):
+        for row in lowstate.read_new():
+            if mapper.on_lowstate(row["q"], row["quat"], row["tick"] / 1000.0, row["wall"]):
                 counts["lowstate"] += 1
         frame = source.read()
         if frame is None:
@@ -87,7 +80,7 @@ def main() -> None:
                 latency.append(time.time() - stamp)
         if time.time() >= report_at:
             pos, fixes = mapper.odometry.position.copy(), mapper.height_fixes[-20:]
-            print(f"[heightmap] maps {counts['depth']}, lowstate {counts['lowstate']}, "
+            print(f"[heightmap] maps {counts['depth']}, lowstate {counts['lowstate']} (lost {lowstate.lost}), "
                   f"no pose for {counts['unmatched']}; latency {np.median(latency) * 1000 if latency else float('nan'):.0f} ms; "
                   f"odometry {np.round(pos, 3).tolist()}; last height fixes {np.round(np.array(fixes) * 100, 1).tolist()} cm",
                   flush=True)
