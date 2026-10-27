@@ -1,5 +1,6 @@
 robot: "r1"
-robot_scene: "src/assets/robots/unitree_r1/xmls/scene_kuka.xml"
+robot_scene: "src/assets/robots/unitree_r1/xmls/scene_arena.xml"
+#robot_scene: "src/assets/robots/unitree_r1/xmls/scene_kuka.xml"  # KUKA cell only
 #robot: "g1_23dof"
 #robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1_23dof.xml"
 #robot: "h1_2"
@@ -26,6 +27,16 @@ enable_elastic_band: 0 # Virtual spring band, used for lifting h1
 # where mediamtx serves the robot's camera; start mediamtx with mediamtx_sim.yml first.
 head_camera: 1
 head_camera_model: "head_camera.json"
-head_camera_fps: 15
+head_camera_fps: 30  # target; the laptop reaches about 27 in stereo. The real camera's rate is not known yet: match it for sim = real
 head_camera_url: "rtsp://127.0.0.1:8554/robot"
 ffmpeg: "/home/mayyar/tools/ffmpeg/ffmpeg"
+
+# Depth image of the head's camera module (R1 EDU spec: 544 x 448 at 10 Hz), rendered with the head
+# camera (needs head_camera: 1) from the MJCF camera "depth_camera" and written to /dev/shm for the
+# perception process. Pinhole: its vertical field is the camera's fovy (124 deg, the spec's), which
+# gives 132 deg across; the spec's 150 deg is the colour image's. Layout in src/depth_camera.h.
+depth_camera: 1
+depth_camera_width: 544
+depth_camera_height: 448
+depth_camera_fps: 10
+depth_camera_shm: "/r1_depth"

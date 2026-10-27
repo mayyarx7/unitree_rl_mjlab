@@ -11,15 +11,19 @@
 #include <mujoco/mujoco.h>
 #include <yaml-cpp/yaml.h>
 
+#include "depth_camera.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -34,6 +38,7 @@ struct HeadCameraConfig
     int fps = 30;
     std::string url;                 // RTSP publish address
     std::string ffmpeg = "ffmpeg";
+    DepthCameraConfig depth;         // the module's depth image, rendered in this thread's context
 };
 
 class HeadCamera
@@ -63,7 +68,10 @@ public:
         const mjModel* built_for = nullptr;
         auto next = std::chrono::steady_clock::now();
         const auto period = std::chrono::microseconds(1000000 / cfg_.fps);
-        std::vector<unsigned char> out(width_ * out_height() * 3);
+        // Resampling and publishing run on their own thread, one picture behind the rendering: the GPU
+        // renders picture n+1 while the CPU resamples picture n, so the slower of the two sets the
+        // frame rate instead of their sum. Each picture's own delay stays the same.
+        std::thread worker([this] { work(); });
 
         while (!exit.load()) {
             std::this_thread::sleep_until(next);
@@ -71,6 +79,7 @@ public:
             if (std::chrono::steady_clock::now() > next) next = std::chrono::steady_clock::now() + period;
 
             const auto t0 = std::chrono::steady_clock::now();
+            bool depth_now = false;
             {
                 const mjModel* m = nullptr;
                 mjData* d = nullptr;
@@ -78,12 +87,20 @@ public:
                 t_lock_ += std::chrono::steady_clock::now() - t0;
                 if (!m || !d) continue;
                 if (m != built_for) {
+                    wait_idle();  // build() replaces the views the worker reads
                     if (!build(m)) { lock.unlock(); std::this_thread::sleep_for(std::chrono::seconds(1)); continue; }
                     built_for = m;
+                    depth_.reset();
+                    if (cfg_.depth.enabled) {
+                        depth_ = std::make_unique<DepthCamera>(cfg_.depth);
+                        if (!depth_->build(m)) depth_.reset();
+                    }
                 }
                 for (size_t i = 0; i < views_.size(); ++i) {
                     mjv_updateScene(m, d, &opt_, nullptr, &views_[i].cam, mjCAT_ALL, &views_[i].scn);
                 }
+                depth_now = depth_ && depth_->due();
+                if (depth_now) depth_->update_scene(m, d, &opt_);
             }
             const auto t1 = std::chrono::steady_clock::now();
             mjrRect vp = {0, 0, cfg_.view_size, cfg_.view_size};
@@ -91,22 +108,40 @@ public:
                 mjr_render(vp, &v.scn, &con_);
                 mjr_readPixels(v.rgb.data(), nullptr, vp, &con_);
             }
+            if (depth_now) depth_->render(&con_);
             const auto t2 = std::chrono::steady_clock::now();
-            resample(out);
+            {
+                // Hand the views over: wait until the worker is done with the previous picture.
+                std::unique_lock<std::mutex> lk(work_mtx_);
+                work_cv_.wait(lk, [this] { return !job_; });
+                for (auto& v : views_) v.rgb.swap(v.work);
+                job_ = true;
+            }
+            work_cv_.notify_all();
             const auto t3 = std::chrono::steady_clock::now();
-            publish(out);
-            const auto t4 = std::chrono::steady_clock::now();
-            t_scene_ += t1 - t0; t_render_ += t2 - t1; t_resample_ += t3 - t2; t_publish_ += t4 - t3;
+            t_scene_ += t1 - t0; t_render_ += t2 - t1; t_wait_ += t3 - t2;
             if (++frames_ % (5 * cfg_.fps) == 0) {
-                auto ms = [this](std::chrono::steady_clock::duration x) {
-                    return std::chrono::duration<double, std::milli>(x).count() / (5 * cfg_.fps);
+                const auto now = std::chrono::steady_clock::now();
+                auto ms = [](std::chrono::steady_clock::duration x, long n) {
+                    return std::chrono::duration<double, std::milli>(x).count() / std::max(n, 1L);
                 };
-                std::cout << "[head camera] per frame ms: lock " << ms(t_lock_) << " scene " << ms(t_scene_)
-                          << " render " << ms(t_render_) << " resample " << ms(t_resample_) << " publish "
-                          << ms(t_publish_) << std::endl;
-                t_lock_ = t_scene_ = t_render_ = t_resample_ = t_publish_ = {};
+                std::lock_guard<std::mutex> lk(work_mtx_);
+                const long n = 5 * cfg_.fps;
+                std::cout << "[head camera] " << n / std::chrono::duration<double>(now - stats_from_).count()
+                          << " fps; per frame ms: lock " << ms(t_lock_, n) << " scene " << ms(t_scene_, n)
+                          << " render " << ms(t_render_, n) << " wait " << ms(t_wait_, n) << " | worker: resample "
+                          << ms(t_resample_, worked_) << " publish " << ms(t_publish_, worked_) << std::endl;
+                t_lock_ = t_scene_ = t_render_ = t_wait_ = t_resample_ = t_publish_ = {};
+                worked_ = 0;
+                stats_from_ = now;
             }
         }
+        {
+            std::lock_guard<std::mutex> lk(work_mtx_);
+            stop_ = true;
+        }
+        work_cv_.notify_all();
+        worker.join();
         close_ffmpeg();
     }
 
@@ -117,8 +152,41 @@ private:
         int camid = -1;
         mjvCamera cam;
         mjvScene scn;
-        std::vector<unsigned char> rgb;
+        std::vector<unsigned char> rgb;   // rendered into
+        std::vector<unsigned char> work;  // the previous picture, being resampled by the worker
     };
+
+    // The worker thread: resamples and publishes each picture handed over by run().
+    void work()
+    {
+        std::vector<unsigned char> out;
+        for (;;) {
+            {
+                std::unique_lock<std::mutex> lk(work_mtx_);
+                work_cv_.wait(lk, [this] { return job_ || stop_; });
+                if (stop_) return;
+            }
+            out.resize(width_ * out_height() * 3);
+            const auto t0 = std::chrono::steady_clock::now();
+            resample(out);
+            const auto t1 = std::chrono::steady_clock::now();
+            publish(out);
+            const auto t2 = std::chrono::steady_clock::now();
+            {
+                std::lock_guard<std::mutex> lk(work_mtx_);
+                t_resample_ += t1 - t0; t_publish_ += t2 - t1;
+                ++worked_;
+                job_ = false;
+            }
+            work_cv_.notify_all();
+        }
+    }
+
+    void wait_idle()
+    {
+        std::unique_lock<std::mutex> lk(work_mtx_);
+        work_cv_.wait(lk, [this] { return !job_; });
+    }
     // Per fisheye pixel: the view (-1: outside every view), the top-left source byte and bilinear weights (x256).
     struct Tap { int view; int offset; uint16_t ax, ay; };
 
@@ -250,6 +318,7 @@ private:
             v.scn.flags[mjRND_SHADOW] = 0;
             v.scn.flags[mjRND_REFLECTION] = 0;
             v.rgb.resize(cfg_.view_size * cfg_.view_size * 3);
+            v.work.resize(v.rgb.size());
             views_.push_back(std::move(v));
         }
         // All views share one body: the fisheye's frame is that body's, x forward, y left, z up.
@@ -344,7 +413,7 @@ private:
             const Tap& t = taps_[i];
             unsigned char* o = &out[3 * i];
             if (t.view < 0) { o[0] = o[1] = o[2] = 0; continue; }
-            const unsigned char* p = views_[t.view].rgb.data() + t.offset;
+            const unsigned char* p = views_[t.view].work.data() + t.offset;
             const int ax = t.ax, ay = t.ay;
             for (int c = 0; c < 3; ++c) {
                 const int top = p[c] * (256 - ax) + p[c + 3] * ax;
@@ -395,9 +464,17 @@ private:
     mjvOption opt_;
     mjrContext con_;
     std::vector<View> views_;
+    std::unique_ptr<DepthCamera> depth_;
     std::vector<Tap> taps_;
     FILE* pipe_ = nullptr;
     long frames_ = 0;
-    std::chrono::steady_clock::duration t_lock_{}, t_scene_{}, t_render_{}, t_resample_{}, t_publish_{};
+    std::chrono::steady_clock::duration t_lock_{}, t_scene_{}, t_render_{}, t_wait_{};
+    std::chrono::steady_clock::time_point stats_from_ = std::chrono::steady_clock::now();
+    // Shared with the worker, under work_mtx_.
+    std::mutex work_mtx_;
+    std::condition_variable work_cv_;
+    bool job_ = false, stop_ = false;
+    long worked_ = 0;
+    std::chrono::steady_clock::duration t_resample_{}, t_publish_{};
     std::chrono::steady_clock::time_point retry_at_{};
 };

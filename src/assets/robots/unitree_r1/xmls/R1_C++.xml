@@ -172,6 +172,9 @@
               <site name="head_camera" pos="0.092 0 -0.015" size="0.005" group="5"/>
               <camera name="head_camera_left" pos="0.092 0 -0.015" xyaxes="0.70711 -0.70711 0 0 0 1" fovy="110"/>
               <camera name="head_camera_right" pos="0.092 0 -0.015" xyaxes="-0.70711 -0.70711 0 0 0 1" fovy="110"/>
+              <!-- The camera module's depth image (depth_camera in the simulator's config): straight ahead,
+                   the spec's 124 deg vertical field. -->
+              <camera name="depth_camera" pos="0.092 0 -0.015" xyaxes="0 -1 0 0 0 1" fovy="124"/>
               <!-- Stereo (head_camera_stereo): the same two views for each eye, the eyes 6.3 cm apart (assumed;
                    set the R1's real camera spacing here once it is known). -->
               <camera name="eye_left_view_left" pos="0.092 0.0315 -0.015" xyaxes="0.70711 -0.70711 0 0 0 1" fovy="110"/>

@@ -747,6 +747,11 @@ int main(int argc, char **argv)
     HeadCameraConfig hc{param::config.head_camera_model.string(), eyes,
                         param::config.head_camera_view_size, param::config.head_camera_fps,
                         param::config.head_camera_url, param::config.ffmpeg};
+    hc.depth.enabled = param::config.depth_camera != 0;
+    hc.depth.width = param::config.depth_camera_width;
+    hc.depth.height = param::config.depth_camera_height;
+    hc.depth.fps = param::config.depth_camera_fps;
+    hc.depth.shm_name = param::config.depth_camera_shm;
     mj::Simulate* s = sim.get();
     head_camera_thread = std::thread([hc, s] {
       HeadCamera camera(hc, [s](const mjModel*& mm, mjData*& dd) {

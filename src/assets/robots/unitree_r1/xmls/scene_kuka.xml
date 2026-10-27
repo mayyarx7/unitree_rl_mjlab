@@ -1887,7 +1887,7 @@
   <worldbody>
     <light pos="1 0 3.5" dir="0 0 -1" directional="true" />
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="1 1 1" />
-    <body name="imported_kuka_assembly" pos="10.244803000 14.807147000 12.127959484" quat="1.0 0.0 0.0 0.0">
+    <body name="imported_kuka_assembly" pos="10.244803000 14.807147000 11.966959000" quat="1.0 0.0 0.0 0.0">
       <geom material="imported_kuka_Diffuse" mesh="imported_kuka_kuka_assembly_kuka_assembly_tn__Part104_h7_tn__Part104_h7_Mesh" name="kuka_assembly_kuka_assembly_tn__Part104_h7_tn__Part104_h7_Mesh" pos="144.318978152604 128.630154003904 -12.0271356571156" type="mesh" quat="0.8870108331782216 1.735697735780139e-17 -2.7781729613295763e-17 -0.46174861323503413" contype="0" conaffinity="0" group="1" />
       <geom material="imported_kuka_Diffuse_1" mesh="imported_kuka_kuka_assembly_kuka_assembly_Pfen3DE45D4A9opp_Pfen3DE45D4A9opp_Mesh" name="kuka_assembly_kuka_assembly_Pfen3DE45D4A9opp_Pfen3DE45D4A9opp_Mesh" pos="-6.92480324089644 -14.9119849516325 -11.9729594798947" type="mesh" quat="-1.6081226496766364e-16 9.65326678803917e-18 1.20378017043778e-16 1.0" contype="0" conaffinity="0" group="1" />
       <geom material="imported_kuka_Diffuse_1" mesh="imported_kuka_Pfen3DE45D4A9opp_1_Pfen3DE45D4A9opp_Mesh" name="Pfen3DE45D4A9opp_1_Pfen3DE45D4A9opp_Mesh" pos="-6.92480324089644 -14.9119849516325 -11.9729594798947" type="mesh" quat="-1.6081226496766364e-16 9.65326678803917e-18 1.20378017043778e-16 1.0" contype="0" conaffinity="0" group="1" />

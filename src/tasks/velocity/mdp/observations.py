@@ -6,6 +6,7 @@ import torch
 
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
+from mjlab.envs.mdp.observations import height_scan
 from mjlab.sensor import ContactSensor
 
 if TYPE_CHECKING:
@@ -53,3 +54,48 @@ def phase(env: ManagerBasedRlEnv, period: float, command_name: str) -> torch.Ten
     phase = torch.where(stand_mask.unsqueeze(1), torch.zeros_like(phase), phase)
     return phase
 
+
+
+class height_scan_perceived:
+  """Height scan as the perception chain delivers it, for policies that walk on what they see.
+
+  The chain (depth camera -> height map, see deploy) publishes a new map only every
+  update_period steps (10 Hz at the 50 Hz policy rate), so between updates the policy sees the
+  last map. Each new map gets per-cell Gaussian noise and holes; a hole is filled with the
+  median of the map, as the chain fills cells it could not measure. A constant offset per
+  episode and the chain's latency come from the term's noise and delay settings.
+
+  Values as height_scan: frame height minus ground height per ray, in metres.
+  """
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    period = cfg.params["update_period"]
+    self.held: torch.Tensor | None = None
+    # Envs update at different steps, as unsynchronised cameras would.
+    self.phase = torch.randint(0, period, (env.num_envs,), device=env.device)
+    self.fresh = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    # A reset robot gets a new map at once instead of the one from before the reset.
+    self.fresh[slice(None) if env_ids is None else env_ids] = True
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    update_period: int,
+    noise_std: float,
+    hole_prob: float,
+  ) -> torch.Tensor:
+    heights = height_scan(env, sensor_name)  # [B, N]
+    new_map = heights + noise_std * torch.randn_like(heights)
+    holes = torch.rand_like(heights) < hole_prob
+    median = new_map.median(dim=1, keepdim=True).values
+    new_map = torch.where(holes, median, new_map)
+
+    if self.held is None:
+      self.held = new_map.clone()
+    update = self.fresh | ((env.episode_length_buf + self.phase) % update_period == 0)
+    self.held = torch.where(update.unsqueeze(1), new_map, self.held)
+    self.fresh[:] = False
+    return self.held.clone()

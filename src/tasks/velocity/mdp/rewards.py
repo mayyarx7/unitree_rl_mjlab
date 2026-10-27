@@ -7,7 +7,7 @@ import torch
 from mjlab.entity import Entity
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.sensor import BuiltinSensor, ContactSensor
+from mjlab.sensor import BuiltinSensor, ContactSensor, RayCastSensor
 from mjlab.utils.lab_api.math import quat_apply_inverse
 from mjlab.utils.lab_api.string import (
   resolve_matching_names_values,
@@ -183,6 +183,59 @@ def feet_clearance(
       active = (total_command > command_threshold).float()
       cost = cost * active
   return cost
+
+
+def feet_clearance_terrain(
+  env: ManagerBasedRlEnv,
+  target_height: float,
+  sensor_names: tuple[str, ...],
+  command_name: str | None = None,
+  command_threshold: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """feet_clearance with the height taken above the ground under each foot, not above z = 0.
+
+  sensor_names: one downward RayCastSensor per foot, in the order of asset_cfg's sites; the
+  highest hit under the foot is its ground. On steps and pallets z = 0 is not the ground.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]  # [B, N]
+  ground = []
+  for i, name in enumerate(sensor_names):
+    sensor: RayCastSensor = env.scene[name]
+    hit_z = sensor.data.hit_pos_w[..., 2]  # [B, R]
+    hit_z = torch.where(sensor.data.distances >= 0, hit_z, torch.full_like(hit_z, -torch.inf))
+    g = hit_z.max(dim=1).values
+    # No hit at all: no cost for this foot.
+    ground.append(torch.where(torch.isinf(g), foot_z[:, i] - target_height, g))
+  clearance = foot_z - torch.stack(ground, dim=1)  # [B, N]
+  foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, N, 2]
+  vel_norm = torch.norm(foot_vel_xy, dim=-1)  # [B, N]
+  cost = torch.sum(torch.abs(clearance - target_height) * vel_norm, dim=1)  # [B]
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    if command is not None:
+      total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+      cost = cost * (total_command > command_threshold).float()
+  return cost
+
+
+def feet_stumble(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  ratio: float = 3.0,
+  min_force: float = 5.0,
+) -> torch.Tensor:
+  """Count feet pushed mostly sideways: a toe or heel against a step's riser or a pallet's edge.
+
+  sensor_name: a contact sensor with reduce="netforce" (forces in the world frame).
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  force = sensor.data.force  # [B, N, 3]
+  assert force is not None
+  f_xy = torch.norm(force[..., :2], dim=-1)
+  f_z = torch.abs(force[..., 2])
+  return torch.sum((f_xy > min_force) & (f_xy > ratio * f_z), dim=1).float()
 
 
 def feet_gait(

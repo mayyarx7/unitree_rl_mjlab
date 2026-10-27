@@ -31,6 +31,10 @@ class TrainConfig:
   enable_nan_guard: bool = False
   torchrunx_log_dir: str | None = None
   gpu_ids: list[int] | Literal["all"] | None = field(default_factory=lambda: [0])
+  init_actor_from: str | None = None
+  """Checkpoint (.pt) whose actor starts this run, e.g. the flat policy for Unitree-R1-Steps. Only
+  the actor (and its observation normaliser) is loaded, so the critic may observe more than the
+  checkpoint's; the iteration count starts at 0."""
 
   @staticmethod
   def from_task(task_id: str) -> "TrainConfig":
@@ -129,6 +133,10 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   if resume_path is not None:
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     runner.load(str(resume_path))
+  elif cfg.init_actor_from is not None:
+    init_path = Path(cfg.init_actor_from).expanduser().resolve()
+    print(f"[INFO]: Starting the actor from: {init_path}")
+    runner.load(str(init_path), load_cfg={"actor": True}, map_location=device)
 
   # Only write config files from rank 0 to avoid race conditions.
   if rank == 0:

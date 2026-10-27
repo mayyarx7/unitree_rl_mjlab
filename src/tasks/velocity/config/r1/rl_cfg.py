@@ -1,5 +1,7 @@
 """RL configuration for Unitree R1 velocity task."""
 
+from dataclasses import replace
+
 from mjlab.rl import (
   RslRlModelCfg,
   RslRlOnPolicyRunnerCfg,
@@ -44,3 +46,15 @@ def unitree_r1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     num_steps_per_env=24,
     max_iterations=10001,
   )
+
+
+def unitree_r1_steps_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Create RL runner configuration for Unitree R1 blind step-up task."""
+  # Started from the flat policy (--init-actor-from), so fewer iterations.
+  return replace(unitree_r1_ppo_runner_cfg(), experiment_name="r1_steps", max_iterations=6001)
+
+
+def unitree_r1_perceptive_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Create RL runner configuration for Unitree R1 perceptive step-up task."""
+  # Trained from scratch: the actor's input differs from the flat policy's.
+  return replace(unitree_r1_ppo_runner_cfg(), experiment_name="r1_perceptive", max_iterations=15001)

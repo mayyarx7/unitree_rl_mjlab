@@ -1,0 +1,43 @@
+<!-- EUR pallet (EPAL 1, 1200 x 800 x 144 mm) as boxes, for step-up tests. Fixed to the world.
+     Frame: x along the 1200 mm boards, y along the 800 mm side, z up from the floor.
+     Layers: bottom boards 22 mm, blocks 78 mm, stringer boards 22 mm, top boards 22 mm.
+     Placed 1.2 m to the robot's left (+y) in the KUKA cell, long side towards the robot: the
+     KUKA's base stands 1.6 m in front of it. -->
+<mujoco model="euro_pallet">
+  <asset>
+    <material name="pallet_wood" rgba="0.78 0.62 0.42 1" />
+  </asset>
+  <default>
+    <default class="pallet">
+      <geom type="box" material="pallet_wood" friction="0.7" group="1" />
+    </default>
+  </default>
+  <worldbody>
+    <body name="euro_pallet" pos="0 1.6 0">
+      <!-- top deck: 145 / 100 / 145 / 100 / 145 mm boards, 41.25 mm gaps -->
+      <geom class="pallet" name="pallet_top_0" pos="0 -0.3275 0.133" size="0.6 0.0725 0.011" />
+      <geom class="pallet" name="pallet_top_1" pos="0 -0.16375 0.133" size="0.6 0.05 0.011" />
+      <geom class="pallet" name="pallet_top_2" pos="0 0 0.133" size="0.6 0.0725 0.011" />
+      <geom class="pallet" name="pallet_top_3" pos="0 0.16375 0.133" size="0.6 0.05 0.011" />
+      <geom class="pallet" name="pallet_top_4" pos="0 0.3275 0.133" size="0.6 0.0725 0.011" />
+      <!-- stringer boards across, over the block rows -->
+      <geom class="pallet" name="pallet_stringer_0" pos="-0.5275 0 0.111" size="0.0725 0.4 0.011" />
+      <geom class="pallet" name="pallet_stringer_1" pos="0 0 0.111" size="0.0725 0.4 0.011" />
+      <geom class="pallet" name="pallet_stringer_2" pos="0.5275 0 0.111" size="0.0725 0.4 0.011" />
+      <!-- 9 blocks, 145 mm along x; 100 mm wide at the edges, 145 mm in the middle row -->
+      <geom class="pallet" name="pallet_block_00" pos="-0.5275 -0.35 0.061" size="0.0725 0.05 0.039" />
+      <geom class="pallet" name="pallet_block_01" pos="-0.5275 0 0.061" size="0.0725 0.0725 0.039" />
+      <geom class="pallet" name="pallet_block_02" pos="-0.5275 0.35 0.061" size="0.0725 0.05 0.039" />
+      <geom class="pallet" name="pallet_block_10" pos="0 -0.35 0.061" size="0.0725 0.05 0.039" />
+      <geom class="pallet" name="pallet_block_11" pos="0 0 0.061" size="0.0725 0.0725 0.039" />
+      <geom class="pallet" name="pallet_block_12" pos="0 0.35 0.061" size="0.0725 0.05 0.039" />
+      <geom class="pallet" name="pallet_block_20" pos="0.5275 -0.35 0.061" size="0.0725 0.05 0.039" />
+      <geom class="pallet" name="pallet_block_21" pos="0.5275 0 0.061" size="0.0725 0.0725 0.039" />
+      <geom class="pallet" name="pallet_block_22" pos="0.5275 0.35 0.061" size="0.0725 0.05 0.039" />
+      <!-- bottom boards along x: 100 / 145 / 100 mm -->
+      <geom class="pallet" name="pallet_bottom_0" pos="0 -0.35 0.011" size="0.6 0.05 0.011" />
+      <geom class="pallet" name="pallet_bottom_1" pos="0 0 0.011" size="0.6 0.0725 0.011" />
+      <geom class="pallet" name="pallet_bottom_2" pos="0 0.35 0.011" size="0.6 0.05 0.011" />
+    </body>
+  </worldbody>
+</mujoco>

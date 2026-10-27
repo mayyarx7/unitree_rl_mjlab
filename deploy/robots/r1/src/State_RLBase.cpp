@@ -3,6 +3,7 @@
 #include "loco_server.h"
 #include "arm_sdk.h"
 #include "isaaclab/envs/mdp/observations/observations.h"
+#include "heightmap_input.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
 
 

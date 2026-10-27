@@ -38,6 +38,12 @@ inline struct SimulationConfig
     int head_camera_fps = 30;
     std::string head_camera_url = "rtsp://127.0.0.1:8554/robot";
     std::string ffmpeg = "ffmpeg";
+    // Depth image of the head's camera module, for the perception process (needs head_camera).
+    int depth_camera = 0;
+    int depth_camera_width = 544;
+    int depth_camera_height = 448;
+    int depth_camera_fps = 10;
+    std::string depth_camera_shm = "/r1_depth";
 
     void load_from_yaml(const std::string &filename)
     {
@@ -64,6 +70,11 @@ inline struct SimulationConfig
             if (cfg["head_camera_fps"]) head_camera_fps = cfg["head_camera_fps"].as<int>();
             if (cfg["head_camera_url"]) head_camera_url = cfg["head_camera_url"].as<std::string>();
             if (cfg["ffmpeg"]) ffmpeg = cfg["ffmpeg"].as<std::string>();
+            if (cfg["depth_camera"]) depth_camera = cfg["depth_camera"].as<int>();
+            if (cfg["depth_camera_width"]) depth_camera_width = cfg["depth_camera_width"].as<int>();
+            if (cfg["depth_camera_height"]) depth_camera_height = cfg["depth_camera_height"].as<int>();
+            if (cfg["depth_camera_fps"]) depth_camera_fps = cfg["depth_camera_fps"].as<int>();
+            if (cfg["depth_camera_shm"]) depth_camera_shm = cfg["depth_camera_shm"].as<std::string>();
         }
         catch(const std::exception& e)
         {
