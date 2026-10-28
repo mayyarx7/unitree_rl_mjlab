@@ -363,7 +363,22 @@ def unitree_r1_perceptive_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     delay_hold_prob=0.5,
   )
 
-  # It sees the edges, so it need not lift every step high (Steps: 12 cm).
+  # It sees the edges, so it need not lift every step high (Steps: 12 cm). Only a foot below
+  # 8 cm costs: a pallet's 14.4 cm need the foot higher, which the symmetric cost punished.
   cfg.rewards["foot_clearance"].params["target_height"] = 0.08
+  cfg.rewards["foot_clearance"].params["only_below"] = True
+
+  if not play:
+    # Fine-tuning for the pallet: steps of 8-20 cm in every row (from 2-20 cm), so most
+    # robots train near 14.4 cm. Training from scratch wants the 2 cm rows back.
+    generator = cfg.scene.terrain.terrain_generator
+    generator.sub_terrains = {
+      name: replace(sub, step_height_range=(0.08, 0.20))
+      if hasattr(sub, "step_height_range") else sub
+      for name, sub in generator.sub_terrains.items()
+    }
+    # Progress after 3 m: out of a pallet pyramid from its centre (0.6 + 3 x 0.8 m), not half
+    # the 8 m sub-terrain. With random commands few robots made 4 m in 20 s.
+    cfg.curriculum["terrain_levels"].params["move_up_distance"] = 3.0
 
   return cfg

@@ -32,7 +32,10 @@ def terrain_levels_vel(
   env_ids: torch.Tensor,
   command_name: str,
   asset_cfg: SceneEntityCfg = _DEFAULT_SCENE_CFG,
+  move_up_distance: float | None = None,
 ) -> torch.Tensor:
+  """move_up_distance: how far from its origin a robot must get to progress (default: half a
+  sub-terrain)."""
   asset: Entity = env.scene[asset_cfg.name]
 
   terrain = env.scene.terrain
@@ -49,7 +52,9 @@ def terrain_levels_vel(
   )
 
   # Robots that walked far enough progress to harder terrains.
-  move_up = distance > terrain_generator.size[0] / 2
+  if move_up_distance is None:
+    move_up_distance = terrain_generator.size[0] / 2
+  move_up = distance > move_up_distance
 
   # Robots that walked less than half of their required distance go to simpler
   # terrains.

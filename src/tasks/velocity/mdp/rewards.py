@@ -192,11 +192,13 @@ def feet_clearance_terrain(
   command_name: str | None = None,
   command_threshold: float = 0.1,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  only_below: bool = False,
 ) -> torch.Tensor:
   """feet_clearance with the height taken above the ground under each foot, not above z = 0.
 
   sensor_names: one downward RayCastSensor per foot, in the order of asset_cfg's sites; the
   highest hit under the foot is its ground. On steps and pallets z = 0 is not the ground.
+  only_below: cost only for a foot lower than target_height, so lifting it higher is free.
   """
   asset: Entity = env.scene[asset_cfg.name]
   foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]  # [B, N]
@@ -211,7 +213,9 @@ def feet_clearance_terrain(
   clearance = foot_z - torch.stack(ground, dim=1)  # [B, N]
   foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, N, 2]
   vel_norm = torch.norm(foot_vel_xy, dim=-1)  # [B, N]
-  cost = torch.sum(torch.abs(clearance - target_height) * vel_norm, dim=1)  # [B]
+  error = target_height - clearance
+  error = torch.clamp(error, min=0.0) if only_below else torch.abs(error)
+  cost = torch.sum(error * vel_norm, dim=1)  # [B]
   if command_name is not None:
     command = env.command_manager.get_command(command_name)
     if command is not None:
